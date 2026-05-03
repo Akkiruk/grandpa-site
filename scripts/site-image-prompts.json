@@ -1,0 +1,72 @@
+[
+  {
+    "id": "home-hero",
+    "filename": "home-hero.png",
+    "usage": "Homepage hero image",
+    "targetPage": "index.html",
+    "targetSection": "Homepage hero visual panel",
+    "integrationStatus": "generate-now",
+    "integrationPriority": 1,
+    "placementReason": "This directly replaces the existing homepage placeholder illustration in the only live image slot already built into the site.",
+    "compositionNote": "Keep the key media centered with some breathing room near the edges so the image still reads well inside the site's 5:4 hero frame.",
+    "model": "gpt-image-1",
+    "size": "1536x1024",
+    "prompt": "Photorealistic real-world small-business hero photo for a local media transfer service. Show a neat arrangement of actual home media formats customers would bring: stacked VHS tapes, one VHS-C or MiniDV camcorder cassette, one Super 8 reel, one small pile of printed family photographs, all placed on a warm neutral tabletop. Soft natural window light, realistic shadows, true-to-life materials and reflections, believable camera depth of field, trustworthy and local rather than corporate, no people, no hands, no labels, no logos, no text, no watermark, not an illustration, not a 3D render, landscape website hero image."
+  },
+  {
+    "id": "mixed-media-box",
+    "filename": "mixed-media-box.png",
+    "usage": "Services page supporting image",
+    "targetPage": "services.html",
+    "targetSection": "Services hero or a new supporting media block under 'What we convert most often'",
+    "integrationStatus": "generate-next",
+    "integrationPriority": 2,
+    "placementReason": "The services page talks about customers bringing mixed boxes, so this image reinforces the exact real-world intake scenario the copy already describes.",
+    "compositionNote": "Keep the box and media readable at a glance without tiny details that disappear on mobile.",
+    "model": "gpt-image-1",
+    "size": "1536x1024",
+    "prompt": "Photorealistic documentary-style photo of an open family media box on a table, showing the exact kind of mixed order a customer might bring to a transfer booth: a few VHS tapes, small camcorder tapes, one or two film reels, 35mm slide trays, and printed photographs together in one box. Slightly messy but believable, clean enough to feel trustworthy, warm natural light, realistic cardboard texture and media detail, no decorative props, no people, no labels, no logos, no text, no watermark, not staged like a stock ad."
+  },
+  {
+    "id": "slide-and-photo-scan",
+    "filename": "slide-photo-scan.png",
+    "usage": "Services or photo scanning section",
+    "targetPage": "services.html",
+    "targetSection": "Photo Services section if we add a dedicated scan visual later",
+    "integrationStatus": "hold",
+    "integrationPriority": 5,
+    "placementReason": "Useful only after the page gets a dedicated image area for scanning work; otherwise it overlaps too much with the mixed-box story.",
+    "compositionNote": "Keep the scanner secondary and the slides/photos primary so it still feels like family-media service, not office equipment marketing.",
+    "model": "gpt-image-1",
+    "size": "1536x1024",
+    "prompt": "Photorealistic close-up photo for a scanning service section: neatly arranged 35mm slides and printed family photographs laid out beside a flatbed photo scanner on a simple light wood table. The scene should look like a real working setup in a small transfer business, warm daylight, sharp detail on the slides and photo edges, clean and practical rather than decorative, no people, no hands, no labels, no logos, no text, no watermark, not an illustration."
+  },
+  {
+    "id": "dvd-and-thumb-drive",
+    "filename": "dvd-thumb-drive.png",
+    "usage": "Pricing or delivery section",
+    "targetPage": "pricing.html",
+    "targetSection": "Output Guide section for DVD or thumb drive",
+    "integrationStatus": "generate-next",
+    "integrationPriority": 4,
+    "placementReason": "The pricing page already has a section about output choice, so this gives that section a concrete visual without inventing a new story.",
+    "compositionNote": "The DVD case and thumb drive should be the clear focal points, with original media only as supporting context.",
+    "model": "gpt-image-1",
+    "size": "1536x1024",
+    "prompt": "Photorealistic delivery-options photo for a media transfer website: a blank DVD case, a simple thumb drive, and a couple of original vintage tapes placed together on a warm neutral tabletop. The image should clearly communicate the final delivery choices without looking like a tech ad, with soft realistic light, believable scale, clean composition, small-business trust, no people, no labels, no logos, no text, no watermark, not glossy corporate product photography."
+  },
+  {
+    "id": "transfer-workbench",
+    "filename": "transfer-workbench.png",
+    "usage": "About page image",
+    "targetPage": "about.html",
+    "targetSection": "About hero side panel or story section",
+    "integrationStatus": "generate-next",
+    "integrationPriority": 3,
+    "placementReason": "The About page talks about equipment, careful work, and how the business started, so a real workspace image would support that story directly.",
+    "compositionNote": "Favor an honest small-workbench view over dramatic cinematic lighting so it feels local and believable.",
+    "model": "gpt-image-1",
+    "size": "1536x1024",
+    "prompt": "Photorealistic small-workshop photo for an About page: a tidy media transfer workbench with real vintage tapes, film reels, slide trays, and printed photographs arranged beside transfer equipment in a believable local setup. Warm natural light, honest and practical workspace, organized but lived-in, trustworthy local business atmosphere, no people, no visible brand names, no labels, no logos, no text, no watermark, not stylized, not cinematic fantasy."
+  }
+]
