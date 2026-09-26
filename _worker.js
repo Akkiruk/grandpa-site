@@ -49,8 +49,11 @@ export function isAllowedPath(path) {
 }
 
 export function applyOperations(files, operations) {
-  if (!Array.isArray(operations) || operations.length === 0 || operations.length > 30) {
+  if (!Array.isArray(operations) || operations.length > 30) {
     throw new Error("The AI did not return a usable set of changes.");
+  }
+  if (operations.length === 0) {
+    throw new Error("That request did not produce a visible change. Describe the exact old wording and the new wording you want.");
   }
 
   const nextFiles = { ...files };
@@ -88,6 +91,10 @@ export function applyOperations(files, operations) {
   }
 
   validateFiles(nextFiles);
+  const changedPaths = Object.keys(nextFiles).filter(path => nextFiles[path] !== files[path]);
+  if (changedPaths.length === 0) {
+    throw new Error("That request did not produce a visible change. Describe the exact old wording and the new wording you want.");
+  }
   return nextFiles;
 }
 
@@ -228,14 +235,32 @@ async function askOpenAI(env, messages) {
   return extractJson(result.choices?.[0]?.message?.content || "");
 }
 
-async function askWorkersAI(env, messages) {
-  const result = await env.AI.run(env.AI_MODEL || "@cf/qwen/qwen2.5-coder-32b-instruct", {
-    messages,
-    response_format: { type: "json_object" },
-    max_tokens: 12000,
-    temperature: 0.2,
-  });
-  return extractJson(result.response || result.result?.response || "");
+export async function askWorkersAI(env, messages) {
+  const model = env.AI_MODEL || "@cf/qwen/qwen2.5-coder-32b-instruct";
+  let retryMessage = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = await env.AI.run(model, {
+      messages: retryMessage
+        ? [...messages, { role: "assistant", content: retryMessage }, {
+            role: "user",
+            content: "That response was not valid JSON. Return only the required JSON object with message and operations. Do not include prose or markdown.",
+          }]
+        : messages,
+      response_format: { type: "json_object" },
+      max_tokens: 12000,
+      temperature: 0.1,
+    });
+    const response = result.response || result.result?.response || "";
+    try {
+      return extractJson(response);
+    } catch (error) {
+      if (attempt === 1) {
+        throw new Error("The AI returned an invalid edit. Please try the request again.");
+      }
+      retryMessage = typeof response === "string" ? response : JSON.stringify(response);
+    }
+  }
 }
 
 async function requestEdits(env, message, files, conversation) {
