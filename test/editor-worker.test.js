@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   applyOperations,
+  askOpenRouter,
   askWorkersAI,
   describeOperations,
   extractJson,
@@ -178,4 +179,25 @@ test("undo restores stacked drafts and then returns to the live site", async () 
   const secondUndo = await (await call("undo", "POST", {}, cookie)).json();
   assert.equal(secondUndo.draft, null);
   assert.equal(await kv.get("draft:current", "json"), null);
+});
+
+test("uses the configured OpenRouter coding model without exposing the key", async () => {
+  let request;
+  const result = await askOpenRouter(
+    { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "minimax/minimax-m2.5" },
+    [{ role: "user", content: "Update services" }],
+    async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ message: "Done", operations: [] }) } }],
+      }), { headers: { "content-type": "application/json" } });
+    }
+  );
+
+  const body = JSON.parse(request.options.body);
+  assert.equal(request.url, "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(request.options.headers.authorization, "Bearer test-key");
+  assert.equal(body.model, "minimax/minimax-m2.5");
+  assert.equal(body.response_format.type, "json_object");
+  assert.equal(result.message, "Done");
 });

@@ -2,6 +2,7 @@
   "type": "module",
   "scripts": {
     "build": "powershell -ExecutionPolicy Bypass -File ./scripts/stage-pages.ps1",
+    "configure:openrouter": "powershell -ExecutionPolicy Bypass -File ./scripts/set-openrouter-key.ps1",
     "test": "node --test"
   },
   "devDependencies": {

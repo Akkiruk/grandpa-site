@@ -271,6 +271,30 @@ async function askOpenAI(env, messages) {
   return extractJson(result.choices?.[0]?.message?.content || "");
 }
 
+export async function askOpenRouter(env, messages, fetchImpl = fetch) {
+  const response = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+      "content-type": "application/json",
+      "http-referer": "https://memories2dvdorusb.com",
+      "x-title": "Memories 2 DVD - USB Website Editor",
+    },
+    body: JSON.stringify({
+      model: env.OPENROUTER_MODEL || "minimax/minimax-m2.5",
+      messages,
+      response_format: { type: "json_object" },
+      max_tokens: 4000,
+      temperature: 0.1,
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result?.error?.message || "OpenRouter could not complete the edit.");
+  }
+  return extractJson(result.choices?.[0]?.message?.content || "");
+}
+
 export async function askWorkersAI(env, messages) {
   const models = env.AI_MODEL
     ? [env.AI_MODEL]
@@ -326,6 +350,9 @@ async function requestEdits(env, message, files, conversation) {
     },
   ];
 
+  if (env.OPENROUTER_API_KEY) {
+    return askOpenRouter(env, messages);
+  }
   if (env.OPENAI_API_KEY) {
     return askOpenAI(env, messages);
   }
@@ -401,7 +428,7 @@ export async function handleApi(request, env, url) {
       draft: draftSummary(draft),
       history: history || [],
       conversation,
-      aiProvider: env.OPENAI_API_KEY ? "OpenAI" : "Cloudflare AI",
+      aiProvider: env.OPENROUTER_API_KEY ? "OpenRouter" : env.OPENAI_API_KEY ? "OpenAI" : "Cloudflare AI",
     });
   }
 
