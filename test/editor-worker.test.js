@@ -9,6 +9,7 @@ import worker, {
   detectImageType,
   extractJson,
   handleApi,
+  inlinePreviewAssets,
   isAllowedPath,
   validateFiles,
 } from "../_worker.js";
@@ -51,6 +52,39 @@ test("matches and edits a file that still has CRLF line endings", () => {
   ]);
   assert.match(result["index.html"], /Welcome/);
   assert.doesNotMatch(result["index.html"], /\r\n/);
+});
+
+test("inlines preview CSS and JS instead of leaving them as separate requests", () => {
+  const html = '<html><head><link rel="stylesheet" href="styles.css" /></head><body><script src="script.js"></script></body></html>';
+  const result = inlinePreviewAssets(html, { "styles.css": "body{color:red}", "script.js": "console.log(1)" });
+  assert.equal(
+    result,
+    '<html><head><style>body{color:red}</style></head><body><script>console.log(1)</script></body></html>'
+  );
+});
+
+test("preview serves HTML with styles.css and script.js inlined, not linked", async () => {
+  const env = {
+    ...signedInEnv(),
+    SITE_CONTENT: {
+      async get(key) {
+        if (key === "draft:current") {
+          return {
+            id: "d1",
+            files: { ...files, "index.html": files["index.html"].replace("</head>", '<link rel="stylesheet" href="styles.css" /></head>') },
+          };
+        }
+        return null;
+      },
+    },
+  };
+  const request = new Request("https://example.com/preview/index.html", {
+    headers: { origin: "https://example.com" },
+  });
+  const response = await worker.fetch(request, env);
+  const body = await response.text();
+  assert.doesNotMatch(body, /<link[^>]*styles\.css/);
+  assert.match(body, /<style>body \{ color: black; \}<\/style>/);
 });
 
 test("detects real image types from content, not the declared name", () => {

@@ -34,6 +34,15 @@ const JSON_HEADERS = {
 
 const PREVIEW_CSP = [
   "default-src 'self' data: blob:",
+  // 'unsafe-inline' on both is deliberate here: the preview HTML has its
+  // styles.css and script.js inlined directly (see inlinePreviewAssets())
+  // rather than linked, because the sandboxed preview iframe's opaque
+  // origin unreliably drops the session cookie on those sub-resource
+  // requests, silently breaking styling with no visible error. Inlining
+  // avoids a second authenticated request entirely. This is scoped to
+  // /preview/* only (already auth-gated and iframe-sandboxed), never the
+  // public site's CSP.
+  "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src https://fonts.gstatic.com",
   "connect-src 'none'",
@@ -745,6 +754,26 @@ async function serveUpload(env, url) {
   });
 }
 
+// See the comment on PREVIEW_CSP: replaces <link href="styles.css"> and
+// <script src="script.js"> with their actual draft content inlined, so the
+// preview iframe never needs a second authenticated sub-resource request.
+export function inlinePreviewAssets(html, files) {
+  let result = html;
+  if (typeof files["styles.css"] === "string") {
+    result = result.replace(
+      /<link\b[^>]*\bhref=["']styles\.css["'][^>]*>/i,
+      `<style>${files["styles.css"]}</style>`
+    );
+  }
+  if (typeof files["script.js"] === "string") {
+    result = result.replace(
+      /<script\b[^>]*\bsrc=["']script\.js["'][^>]*><\/script>/i,
+      `<script>${files["script.js"]}</script>`
+    );
+  }
+  return result;
+}
+
 async function servePreview(request, env, url) {
   if (!(await isAuthenticated(request, env))) {
     return Response.redirect(new URL("/admin/", url), 302);
@@ -758,7 +787,8 @@ async function servePreview(request, env, url) {
       : path.endsWith(".css")
         ? "text/css; charset=utf-8"
         : "application/javascript; charset=utf-8";
-    return new Response(draft.files[path], {
+    const body = path.endsWith(".html") ? inlinePreviewAssets(draft.files[path], draft.files) : draft.files[path];
+    return new Response(body, {
       headers: {
         "content-type": contentType,
         "cache-control": "no-store",
