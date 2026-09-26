@@ -773,7 +773,14 @@ async function servePublished(request, env, url) {
   return new Response(content, {
     headers: {
       "content-type": contentType,
-      "cache-control": "public, max-age=60",
+      // Deliberately no caching at all, at any layer (browser or
+      // Cloudflare's own edge cache) - a "max-age=60" here previously meant
+      // a freshly published change could still show the old page for up to
+      // a minute, at whichever Cloudflare PoP a visitor happened to hit.
+      // Publishing is infrequent and this site is low-traffic, so the
+      // performance cost of always fetching fresh is negligible next to
+      // never showing stale content after a publish.
+      "cache-control": "no-store",
       "content-security-policy": PUBLIC_CSP,
       "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
       "referrer-policy": "strict-origin-when-cross-origin",
