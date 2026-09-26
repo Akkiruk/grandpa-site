@@ -303,6 +303,17 @@ h1 {
   border-color: #efb5aa;
 }
 
+.message-photo {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  object-fit: cover;
+}
+
 .change-receipt {
   position: relative;
   display: grid;
@@ -415,14 +426,72 @@ h1 {
 
 .composer textarea {
   width: 100%;
-  min-height: 102px;
+  min-height: 88px;
   resize: none;
-  padding: 14px 76px 14px 14px;
+  padding: 10px 76px 14px 14px;
   border: 0;
   border-radius: 8px;
   outline: 0;
   color: var(--ink);
   line-height: 1.5;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 0;
+  flex-wrap: wrap;
+}
+
+.photo-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #b9c2c9;
+  border-radius: 999px;
+  background: #f4f6f7;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.photo-button:hover {
+  background: #e9edee;
+}
+
+.photo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 4px;
+  border-radius: 999px;
+  background: #eef3f2;
+  border: 1px solid rgba(40, 106, 104, 0.25);
+}
+
+.photo-chip img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.photo-chip span {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.photo-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--muted, #5b6a73);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
 }
 
 .send-button {

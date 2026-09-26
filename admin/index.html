@@ -66,6 +66,17 @@
             </div>
             <form class="composer" id="chat-form">
               <label class="sr-only" for="message">Tell the editor what to change</label>
+              <div class="composer-toolbar">
+                <button class="photo-button" id="photo-button" type="button">
+                  <span aria-hidden="true">📷</span> Add photo
+                </button>
+                <input class="sr-only" type="file" id="photo-input" accept="image/*" capture="environment" />
+                <div class="photo-chip" id="photo-chip" hidden>
+                  <img id="photo-chip-preview" alt="" />
+                  <span id="photo-chip-label">Photo attached</span>
+                  <button type="button" id="photo-remove" aria-label="Remove photo">✕</button>
+                </div>
+              </div>
               <textarea
                 id="message"
                 name="message"

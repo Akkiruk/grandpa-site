@@ -1,11 +1,12 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 
-import {
+import worker, {
   __setClerkClientFactory,
   applyOperations,
   askOpenRouter,
   describeOperations,
+  detectImageType,
   extractJson,
   handleApi,
   isAllowedPath,
@@ -50,6 +51,115 @@ test("matches and edits a file that still has CRLF line endings", () => {
   ]);
   assert.match(result["index.html"], /Welcome/);
   assert.doesNotMatch(result["index.html"], /\r\n/);
+});
+
+test("detects real image types from content, not the declared name", () => {
+  assert.equal(detectImageType(new Uint8Array([0xff, 0xd8, 0xff, 0, 0])), "image/jpeg");
+  assert.equal(
+    detectImageType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])),
+    "image/png"
+  );
+  const webp = new Uint8Array(16);
+  webp.set([0x52, 0x49, 0x46, 0x46], 0);
+  webp.set([0x57, 0x45, 0x42, 0x50], 8);
+  assert.equal(detectImageType(webp), "image/webp");
+  assert.equal(
+    detectImageType(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0])),
+    "image/gif"
+  );
+  assert.equal(detectImageType(new Uint8Array([0x00, 0x01, 0x02, 0x03])), null);
+});
+
+function kvNamespace() {
+  const store = new Map();
+  const meta = new Map();
+  return {
+    async get(key, type) {
+      const value = store.get(key);
+      if (value === undefined) return null;
+      return type === "json" ? JSON.parse(value) : value;
+    },
+    async getWithMetadata(key, type) {
+      const value = store.get(key);
+      if (value === undefined) return { value: null, metadata: null };
+      return { value: type === "json" ? JSON.parse(value) : value, metadata: meta.get(key) || null };
+    },
+    async put(key, value, options) {
+      store.set(key, value);
+      if (options?.metadata) meta.set(key, options.metadata);
+    },
+    async delete(key) {
+      store.delete(key);
+      meta.delete(key);
+    },
+  };
+}
+
+test("uploads a photo and serves it back with the sniffed content type", async () => {
+  const env = { ...signedInEnv(), SITE_CONTENT: kvNamespace() };
+  const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+  const formData = new FormData();
+  formData.append("photo", new Blob([pngBytes], { type: "image/png" }), "photo.png");
+  const uploadRequest = new Request("https://example.com/api/editor/upload", {
+    method: "POST",
+    headers: { origin: "https://example.com" },
+    body: formData,
+  });
+  const uploadResponse = await handleApi(uploadRequest, env, new URL(uploadRequest.url));
+  assert.equal(uploadResponse.status, 200);
+  const { url } = await uploadResponse.json();
+  assert.match(url, /^\/uploads\/[a-z0-9-]+\.png$/);
+
+  const getRequest = new Request(`https://example.com${url}`);
+  const getResponse = await worker.fetch(getRequest, env);
+  assert.equal(getResponse.status, 200);
+  assert.equal(getResponse.headers.get("content-type"), "image/png");
+  const bytesBack = new Uint8Array(await getResponse.arrayBuffer());
+  assert.deepEqual(Array.from(bytesBack), Array.from(pngBytes));
+});
+
+test("rejects an upload that isn't actually an image", async () => {
+  const env = { ...signedInEnv(), SITE_CONTENT: kvNamespace() };
+  const formData = new FormData();
+  formData.append("photo", new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }), "fake.png");
+  const request = new Request("https://example.com/api/editor/upload", {
+    method: "POST",
+    headers: { origin: "https://example.com" },
+    body: formData,
+  });
+  const response = await handleApi(request, env, new URL(request.url));
+  assert.equal(response.status, 400);
+});
+
+test("ignores an imageUrl that isn't one of this app's own uploads", async () => {
+  const requests = [];
+  mock.method(globalThis, "fetch", async (requestUrl, options) => {
+    requests.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ message: "Done", operations: [] }) } }],
+    }), { headers: { "content-type": "application/json" } });
+  });
+  const env = {
+    ...signedInEnv(),
+    OPENROUTER_API_KEY: "test-key",
+    SITE_CONTENT: kvNamespace(),
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.slice(1);
+        if (path === "styles.css") return new Response("body { color: black; }");
+        if (path === "script.js") return new Response("console.log('ready');");
+        return new Response("<!doctype html><html><head><title>Home</title></head><body>Hello</body></html>");
+      },
+    },
+  };
+  const request = new Request("https://example.com/api/editor/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://example.com" },
+    body: JSON.stringify({ message: "hi", imageUrl: "https://attacker.example/payload.jpg" }),
+  });
+  await handleApi(request, env, new URL(request.url));
+  const userMessage = requests[0].messages.find(m => m.role === "user");
+  assert.equal(typeof userMessage.content, "string");
 });
 
 test("applies an exact guarded edit", () => {

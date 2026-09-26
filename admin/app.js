@@ -6,6 +6,12 @@ const loginError = document.getElementById("login-error");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message");
 const sendButton = document.getElementById("send-button");
+const photoButton = document.getElementById("photo-button");
+const photoInput = document.getElementById("photo-input");
+const photoChip = document.getElementById("photo-chip");
+const photoChipPreview = document.getElementById("photo-chip-preview");
+const photoChipLabel = document.getElementById("photo-chip-label");
+const photoRemove = document.getElementById("photo-remove");
 const conversationElement = document.getElementById("conversation");
 const suggestions = document.getElementById("suggestions");
 const publishButton = document.getElementById("publish-button");
@@ -24,8 +30,80 @@ let state = {
   history: [],
   conversation: [],
   busy: false,
+  pendingPhoto: null,
 };
 let currentPreviewPath = "index.html";
+
+// Resizes/compresses a photo client-side before it ever leaves the phone -
+// a camera photo can be 10+ MB, which would slow the page down once it's
+// embedded in the live site and cost more to send to the AI for nothing.
+async function resizeImageForUpload(file, maxDimension = 1600, quality = 0.82) {
+  const bitmap = await createImageBitmap(file);
+  let { width, height } = bitmap;
+  if (width > maxDimension || height > maxDimension) {
+    const scale = maxDimension / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => (blob ? resolve(blob) : reject(new Error("Could not process that photo."))), "image/jpeg", quality);
+  });
+}
+
+async function uploadPhoto(file) {
+  const resized = await resizeImageForUpload(file);
+  const token = window.Clerk?.session ? await window.Clerk.session.getToken() : null;
+  const formData = new FormData();
+  formData.append("photo", resized, "photo.jpg");
+  const response = await fetch("/api/editor/upload", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || "That photo couldn't be uploaded.");
+  }
+  return data.url;
+}
+
+function clearPendingPhoto() {
+  state.pendingPhoto = null;
+  photoChip.hidden = true;
+  photoChipPreview.src = "";
+}
+
+photoButton.addEventListener("click", () => photoInput.click());
+
+photoInput.addEventListener("change", async () => {
+  const file = photoInput.files[0];
+  if (!file) {
+    return;
+  }
+  const originalLabel = photoButton.innerHTML;
+  photoButton.disabled = true;
+  photoButton.textContent = "Uploading…";
+  try {
+    const url = await uploadPhoto(file);
+    state.pendingPhoto = { url };
+    photoChipPreview.src = url;
+    photoChipLabel.textContent = "Photo attached";
+    photoChip.hidden = false;
+  } catch (error) {
+    addMessage("assistant", error.message, { error: true });
+  } finally {
+    photoButton.disabled = false;
+    photoButton.innerHTML = originalLabel;
+    photoInput.value = "";
+  }
+});
+
+photoRemove.addEventListener("click", clearPendingPhoto);
 
 async function api(path, options = {}) {
   const token = window.Clerk?.session ? await window.Clerk.session.getToken() : null;
@@ -66,6 +144,13 @@ function addMessage(role, text, options = {}) {
     message.dataset.typing = "true";
     message.innerHTML = '<span class="typing" aria-label="Working"><span></span><span></span><span></span></span>';
   } else {
+    if (options.imagePath) {
+      const photo = document.createElement("img");
+      photo.className = "message-photo";
+      photo.src = options.imagePath;
+      photo.alt = "Attached photo";
+      message.append(photo);
+    }
     const copy = document.createElement("div");
     copy.textContent = text;
     message.append(copy);
@@ -109,6 +194,7 @@ function renderConversation() {
     receipt: item.receipt,
     undone: item.undone,
     canUndo: Boolean(item.editId && item.editId === state.draft?.lastEditId && state.draft?.canUndo && !item.undone),
+    imagePath: item.imagePath,
   }));
 }
 
@@ -252,16 +338,18 @@ chatForm.addEventListener("submit", async event => {
     return;
   }
 
+  const imagePath = state.pendingPhoto?.url;
   state.busy = true;
   messageInput.value = "";
   sendButton.disabled = true;
   suggestions.hidden = true;
-  addMessage("user", message);
+  addMessage("user", message, { imagePath });
+  clearPendingPhoto();
   const typing = addMessage("assistant", "", { typing: true });
   renderDraftState();
 
   try {
-    const data = await api("chat", { method: "POST", body: JSON.stringify({ message }) });
+    const data = await api("chat", { method: "POST", body: JSON.stringify({ message, imageUrl: imagePath }) });
     typing.remove();
     addMessage("assistant", data.message, { receipt: data.receipt, canUndo: true });
     if (data.receipt.aiProvider) {
@@ -269,7 +357,7 @@ chatForm.addEventListener("submit", async event => {
     }
     state.draft = data.draft;
     state.conversation.push(
-      { role: "user", text: message },
+      { role: "user", text: message, imagePath },
       { role: "assistant", text: data.message, editId: data.draft.lastEditId, receipt: data.receipt }
     );
     refreshPreview(data.receipt.previewPath);
