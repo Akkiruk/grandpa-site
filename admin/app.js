@@ -6,6 +6,7 @@ const loginError = document.getElementById("login-error");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message");
 const sendButton = document.getElementById("send-button");
+const micButton = document.getElementById("mic-button");
 const photoButton = document.getElementById("photo-button");
 const photoInput = document.getElementById("photo-input");
 const photoChip = document.getElementById("photo-chip");
@@ -24,6 +25,28 @@ const previewFrame = document.getElementById("preview-frame");
 const previewStage = document.getElementById("preview-stage");
 const saveState = document.getElementById("save-state");
 const providerLabel = document.getElementById("provider-label");
+const liveStatusBanner = document.getElementById("live-status-banner");
+
+const FRIENDLY_FILE_NAMES = {
+  "index.html": "Home page",
+  "about.html": "About page",
+  "services.html": "Services page",
+  "process.html": "How It Works page",
+  "pricing.html": "Pricing page",
+  "styles.css": "Site styling",
+  "script.js": "Site behavior",
+};
+
+function friendlyFileName(path) {
+  if (FRIENDLY_FILE_NAMES[path]) {
+    return FRIENDLY_FILE_NAMES[path];
+  }
+  if (path.endsWith(".html")) {
+    const name = path.slice(0, -".html".length).replace(/-/g, " ");
+    return `${name.charAt(0).toUpperCase()}${name.slice(1)} page`;
+  }
+  return path;
+}
 
 let state = {
   draft: null,
@@ -105,6 +128,55 @@ photoInput.addEventListener("change", async () => {
 
 photoRemove.addEventListener("click", clearPendingPhoto);
 
+// Voice input: lets someone speak their request instead of typing it.
+// Only shown when the browser actually supports it (mainly Chrome/Edge;
+// Safari's support has historically been unreliable), so nobody sees a
+// button that doesn't work.
+const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognizer = null;
+let isListening = false;
+
+if (SpeechRecognitionApi) {
+  micButton.hidden = false;
+  recognizer = new SpeechRecognitionApi();
+  recognizer.lang = "en-US";
+  recognizer.interimResults = false;
+  recognizer.maxAlternatives = 1;
+
+  recognizer.addEventListener("result", event => {
+    const transcript = Array.from(event.results)
+      .map(result => result[0].transcript)
+      .join(" ")
+      .trim();
+    if (transcript) {
+      messageInput.value = messageInput.value ? `${messageInput.value.trim()} ${transcript}` : transcript;
+    }
+  });
+
+  const stopListening = () => {
+    isListening = false;
+    micButton.classList.remove("is-listening");
+    micButton.innerHTML = '<span aria-hidden="true">🎤</span> Speak';
+  };
+  recognizer.addEventListener("end", stopListening);
+  recognizer.addEventListener("error", stopListening);
+
+  micButton.addEventListener("click", () => {
+    if (isListening) {
+      recognizer.stop();
+      return;
+    }
+    isListening = true;
+    micButton.classList.add("is-listening");
+    micButton.innerHTML = '<span aria-hidden="true">🎤</span> Listening…';
+    try {
+      recognizer.start();
+    } catch {
+      stopListening();
+    }
+  });
+}
+
 async function api(path, options = {}) {
   const token = window.Clerk?.session ? await window.Clerk.session.getToken() : null;
   const response = await fetch(`/api/editor/${path}`, {
@@ -157,13 +229,11 @@ function addMessage(role, text, options = {}) {
     if (options.receipt) {
       const receipt = document.createElement("div");
       receipt.className = `change-receipt${options.undone ? " is-undone" : ""}`;
+      const friendlyNames = options.receipt.files.map(friendlyFileName);
       const summary = document.createElement("strong");
-      const count = options.receipt.files.length;
-      summary.textContent = options.undone
-        ? "Change undone"
-        : `${count} file${count === 1 ? "" : "s"} changed`;
+      summary.textContent = options.undone ? "Change undone" : "Updated:";
       const paths = document.createElement("span");
-      paths.textContent = options.receipt.files.join(" · ");
+      paths.textContent = friendlyNames.join(", ");
       receipt.append(summary, paths);
       if (options.canUndo) {
         const undoButton = document.createElement("button");
@@ -204,6 +274,7 @@ function renderDraftState() {
   discardButton.disabled = !hasDraft || state.busy;
   saveState.textContent = hasDraft ? "Previewing changes" : "Website is live";
   saveState.style.color = hasDraft ? "#b8442d" : "#2e6b45";
+  liveStatusBanner.hidden = !hasDraft;
 }
 
 function renderVersions() {

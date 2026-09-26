@@ -242,6 +242,18 @@ h1 {
   font-weight: 700;
 }
 
+.live-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background: #fff3ec;
+  border-bottom: 1px solid #f0c9ab;
+  color: #7a3a10;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
 .editor-main {
   height: calc(100% - 68px);
   display: grid;
@@ -460,6 +472,36 @@ h1 {
 
 .photo-button:hover {
   background: #e9edee;
+}
+
+.mic-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #b9c2c9;
+  border-radius: 999px;
+  background: #f4f6f7;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mic-button:hover {
+  background: #e9edee;
+}
+
+.mic-button.is-listening {
+  background: #fde7e2;
+  border-color: #e79a86;
+  color: #9c3a1f;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(184, 68, 45, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(184, 68, 45, 0); }
 }
 
 .photo-chip {

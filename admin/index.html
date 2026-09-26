@@ -54,6 +54,11 @@
         </div>
       </header>
 
+      <div class="live-status-banner" id="live-status-banner" hidden>
+        <span aria-hidden="true">👀</span>
+        <span>You're previewing changes. <strong>Nothing is live on your real website yet</strong> — press Publish changes below when you're happy with it.</span>
+      </div>
+
       <main class="editor-main">
         <section class="chat-pane" aria-label="Website editing conversation">
           <div class="conversation" id="conversation" aria-live="polite"></div>
@@ -67,6 +72,9 @@
             <form class="composer" id="chat-form">
               <label class="sr-only" for="message">Tell the editor what to change</label>
               <div class="composer-toolbar">
+                <button class="mic-button" id="mic-button" type="button" hidden>
+                  <span aria-hidden="true">🎤</span> Speak
+                </button>
                 <button class="photo-button" id="photo-button" type="button">
                   <span aria-hidden="true">📷</span> Add photo
                 </button>
