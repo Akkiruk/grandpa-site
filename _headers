@@ -1,0 +1,6 @@
+/admin/*
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+
+/api/editor/*
+  Cache-Control: no-store

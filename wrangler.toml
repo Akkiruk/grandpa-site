@@ -2,3 +2,10 @@ name = "memories-2-dvd-usb"
 pages_build_output_dir = "./dist"
 compatibility_date = "2026-05-02"
 send_metrics = false
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "SITE_CONTENT"
+id = "3bf81b71c20144d5a571f961176306cb"

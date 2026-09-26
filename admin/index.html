@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Website Editor | Memories 2 DVD - USB</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <section class="login-view" id="login-view">
+      <form class="login-panel" id="login-form">
+        <div class="brand-mark" aria-hidden="true">M</div>
+        <p class="eyebrow">Memories 2 DVD - USB</p>
+        <h1>Website editor</h1>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <p class="form-error" id="login-error" role="alert"></p>
+        <button class="primary-button" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <div class="editor-view" id="editor-view" hidden>
+      <header class="editor-header">
+        <a class="editor-brand" href="/" target="_blank" rel="noreferrer">
+          <span class="brand-mark" aria-hidden="true">M</span>
+          <span>
+            <strong>Website editor</strong>
+            <small id="provider-label">Ready</small>
+          </span>
+        </a>
+        <div class="header-actions">
+          <span class="save-state" id="save-state">Website is live</span>
+          <button class="quiet-button mobile-preview-button" id="mobile-preview" type="button">Preview</button>
+          <a class="quiet-button" href="/" target="_blank" rel="noreferrer">View site</a>
+          <button class="quiet-button" id="logout-button" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <main class="editor-main">
+        <section class="chat-pane" aria-label="Website editing conversation">
+          <div class="conversation" id="conversation" aria-live="polite"></div>
+
+          <div class="composer-wrap">
+            <div class="suggestions" id="suggestions">
+              <button type="button">Update a price</button>
+              <button type="button">Change some wording</button>
+              <button type="button">Redesign this page</button>
+            </div>
+            <form class="composer" id="chat-form">
+              <label class="sr-only" for="message">Tell the editor what to change</label>
+              <textarea
+                id="message"
+                name="message"
+                rows="3"
+                maxlength="4000"
+                placeholder="Tell me what you want changed..."
+                required
+              ></textarea>
+              <button class="send-button" id="send-button" type="submit" aria-label="Send request">Send</button>
+            </form>
+            <div class="draft-actions">
+              <button class="secondary-button" id="versions-button" type="button">Versions</button>
+              <button class="secondary-button" id="discard-button" type="button" disabled>Discard</button>
+              <button class="primary-button" id="publish-button" type="button" disabled>Publish changes</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="preview-pane" id="preview-pane" aria-label="Website preview">
+          <div class="preview-bar">
+            <span class="preview-dot"></span>
+            <strong>Preview</strong>
+            <button class="quiet-button preview-refresh" id="refresh-preview" type="button">Refresh</button>
+            <button class="quiet-button mobile-close-preview" id="close-preview" type="button">Back to chat</button>
+          </div>
+          <iframe id="preview-frame" title="Preview of the website" src="/preview/index.html"></iframe>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="versions-dialog" id="versions-dialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">Saved copies</p>
+          <h2>Earlier versions</h2>
+        </div>
+        <button class="quiet-button" id="close-versions" type="button">Close</button>
+      </div>
+      <div class="version-list" id="version-list"></div>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="confirm-dialog">
+      <p class="eyebrow">Ready to publish</p>
+      <h2>Put these changes on the live website?</h2>
+      <div class="confirm-actions">
+        <button class="secondary-button" id="cancel-publish" type="button">Not yet</button>
+        <button class="primary-button" id="confirm-publish" type="button">Yes, publish</button>
+      </div>
+    </dialog>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -24,7 +24,9 @@ $rootFiles = @(
   "process.html",
   "pricing.html",
   "styles.css",
-  "script.js"
+  "script.js",
+  "_worker.js",
+  "_headers"
 )
 
 foreach ($file in $rootFiles) {
@@ -32,5 +34,6 @@ foreach ($file in $rootFiles) {
 }
 
 Copy-Item -LiteralPath (Join-Path $root "assets") -Destination (Join-Path $resolvedOutputDir "assets") -Recurse
+Copy-Item -LiteralPath (Join-Path $root "admin") -Destination (Join-Path $resolvedOutputDir "admin") -Recurse
 
 Write-Host "Staged Cloudflare Pages assets to $resolvedOutputDir" -ForegroundColor Green
