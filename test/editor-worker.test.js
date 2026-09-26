@@ -113,6 +113,41 @@ test("rejects protected paths and ambiguous replacements", () => {
   );
 });
 
+test("the AI editor can never touch the editor, auth, or deployment surface itself", () => {
+  // Any path with a slash fails the allowlist regex outright, so nothing
+  // inside admin/ is reachable no matter the filename.
+  const forbiddenPaths = [
+    "admin/index.html",
+    "admin/app.js",
+    "admin/admin.css",
+    "admin.html",
+    "Admin.HTML",
+    "_worker.js",
+    "wrangler.toml",
+    "package.json",
+    "package-lock.json",
+    ".env",
+    "_headers",
+    "failed/index.html",
+    "test/editor-worker.test.js",
+    "../admin/index.html",
+    "..%2Fadmin%2Findex.html",
+  ];
+  for (const path of forbiddenPaths) {
+    assert.equal(isAllowedPath(path), false, `expected ${path} to be blocked`);
+    assert.throws(
+      () => applyOperations(files, [{ path, content: "<!doctype html><html><head><title>x</title></head><body></body></html>" }]),
+      /protected file/,
+      `expected a content operation on ${path} to be rejected`
+    );
+  }
+  // The same allowlist is re-checked at publish time, independent of the
+  // chat-time check, so a draft can't smuggle a bad path through either.
+  for (const path of forbiddenPaths) {
+    assert.throws(() => validateFiles({ ...files, [path]: "anything" }), /Invalid site file/);
+  }
+});
+
 test("rejects unsafe or structurally broken output", () => {
   assert.throws(
     () => validateFiles({ ...files, "index.html": "<html><body><a href=\"javascript:alert(1)\">x</a></body></html>" }),
