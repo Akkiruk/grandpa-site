@@ -190,11 +190,17 @@ async function loadStatus() {
 
 function mountSignIn() {
   clerkSignIn.innerHTML = "";
-  window.Clerk.mountSignIn(clerkSignIn);
+  window.Clerk.mountSignIn(clerkSignIn, { forceRedirectUrl: "/admin/" });
 }
 
 async function initAuth() {
-  await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+  await window.Clerk.load({
+    ui: { ClerkUI: window.__internal_ClerkUICtor },
+    // Without these, Clerk's post-OAuth redirect (e.g. "Continue with Google")
+    // defaults to "/" instead of back to the editor.
+    signInForceRedirectUrl: "/admin/",
+    signUpForceRedirectUrl: "/admin/",
+  });
   window.Clerk.addListener(({ user }) => {
     if (user) {
       setAuthenticated(true);
