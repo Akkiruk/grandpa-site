@@ -54,9 +54,9 @@ test("matches and edits a file that still has CRLF line endings", () => {
   assert.doesNotMatch(result["index.html"], /\r\n/);
 });
 
-test("inlines preview CSS and JS instead of leaving them as separate requests", async () => {
+test("inlines preview CSS and JS instead of leaving them as separate requests", () => {
   const html = '<html><head><link rel="stylesheet" href="styles.css" /></head><body><script src="script.js"></script></body></html>';
-  const result = await inlinePreviewAssets(html, { "styles.css": "body{color:red}", "script.js": "console.log(1)" });
+  const result = inlinePreviewAssets(html, { "styles.css": "body{color:red}", "script.js": "console.log(1)" });
   assert.equal(
     result,
     '<html><head><style>body{color:red}</style></head><body><script>console.log(1)</script></body></html>'
@@ -82,51 +82,24 @@ test("preview route accepts the session token via ?pt= when the sandboxed iframe
   assert.match(await response.text(), /About/);
 });
 
-test("rewrites local page links to carry the preview auth token, so clicks inside the sandboxed iframe stay signed in", async () => {
-  const html = '<nav><a href="about.html">About</a> <a href="/pricing.html">Pricing</a> <a href="https://example.com">External</a> <a href="#top">Top</a></nav>';
-  const result = await inlinePreviewAssets(html, {}, null, null, "tok123");
+test("rewrites local page links and image sources to carry the preview auth token, so clicks and image loads inside the sandboxed iframe stay signed in", () => {
+  // Local images used to be base64-inlined directly into the HTML to work
+  // around this same auth problem, but doing that synchronously in the
+  // Worker for a multi-megabyte real photo was enough to hit Cloudflare's
+  // CPU limit and crash the whole preview (error 1102). Carrying the token
+  // on the URL instead - the same trick already used for page links - lets
+  // the browser just request the image normally.
+  const html =
+    '<nav><a href="about.html">About</a> <a href="/pricing.html">Pricing</a> <a href="https://example.com">External</a> <a href="#top">Top</a></nav>' +
+    '<img src="assets/generated/home-hero.png" alt="Hero"> <img src="/uploads/abc123.png" alt="A photo"> <img src="https://cdn.example.com/x.png" alt="External">';
+  const result = inlinePreviewAssets(html, {}, "tok123");
   assert.match(result, /href="about\.html\?pt=tok123"/);
   assert.match(result, /href="\/pricing\.html\?pt=tok123"/);
   assert.match(result, /href="https:\/\/example\.com"/);
   assert.match(result, /href="#top"/);
-});
-
-test("inlines an uploaded photo as a data URI instead of a same-origin request", async () => {
-  const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
-  const env = {
-    SITE_CONTENT: {
-      async getWithMetadata(key, type) {
-        assert.equal(key, "upload:abc123.png");
-        assert.equal(type, "arrayBuffer");
-        return { value: bytes, metadata: { contentType: "image/png" } };
-      },
-    },
-  };
-  const html = '<img src="/uploads/abc123.png" alt="A photo">';
-  const result = await inlinePreviewAssets(html, {}, env);
-  assert.doesNotMatch(result, /\/uploads\//);
-  assert.match(result, /^<img src="data:image\/png;base64,/);
-});
-
-test("inlines a pre-existing local image (assets/...) from deployed assets, not just uploads", async () => {
-  // This is the actual real-world bug: the site's own images were added
-  // directly to the repo before the AI editor existed, referenced with a
-  // relative path like src="assets/generated/home-hero.png" - never
-  // touching /uploads/ at all. These hit the exact same sandboxed-iframe
-  // CSP problem as uploaded photos and styles.css did.
-  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3]);
-  const env = {
-    ASSETS: {
-      async fetch(request) {
-        assert.equal(new URL(request.url).pathname, "/assets/generated/home-hero.png");
-        return new Response(bytes, { headers: { "content-type": "image/jpeg" } });
-      },
-    },
-  };
-  const html = '<img src="assets/generated/home-hero.png" alt="Hero">';
-  const result = await inlinePreviewAssets(html, {}, env, "https://example.com/preview/index.html");
-  assert.doesNotMatch(result, /assets\/generated/);
-  assert.match(result, /^<img src="data:image\/jpeg;base64,/);
+  assert.match(result, /src="assets\/generated\/home-hero\.png\?pt=tok123"/);
+  assert.match(result, /src="\/uploads\/abc123\.png\?pt=tok123"/);
+  assert.match(result, /src="https:\/\/cdn\.example\.com\/x\.png"/);
 });
 
 test("preview serves HTML with styles.css and script.js inlined, not linked", async () => {

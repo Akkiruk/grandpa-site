@@ -32,26 +32,38 @@ const JSON_HEADERS = {
   "cache-control": "no-store",
 };
 
-const PREVIEW_CSP = [
-  "default-src 'self' data: blob:",
-  // 'unsafe-inline' on both is deliberate here: the preview HTML has its
-  // styles.css and script.js inlined directly (see inlinePreviewAssets())
-  // rather than linked, because the sandboxed preview iframe's opaque
-  // origin unreliably drops the session cookie on those sub-resource
-  // requests, silently breaking styling with no visible error. Inlining
-  // avoids a second authenticated request entirely. This is scoped to
-  // /preview/* only (already auth-gated and iframe-sandboxed), never the
-  // public site's CSP.
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src https://fonts.gstatic.com",
-  "connect-src 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'self'",
-  "base-uri 'none'",
-  "object-src 'none'",
-  "sandbox allow-scripts",
-].join("; ");
+// A function, not a constant: img-src needs the request's actual origin
+// spelled out literally. The sandboxed preview iframe's document has an
+// opaque origin, and the CSP keyword 'self' can never match anything from
+// an opaque origin (it's defined as "same origin as the protected
+// document", and opaque origins never equal anything, including
+// themselves) - but an explicit https://host source is compared against
+// the resource's URL directly and matches regardless of the requesting
+// document's own origin. Images are then loaded as normal <img src>
+// requests (with a "pt" auth token query param - see rewriteLocalUrls)
+// rather than inlined as base64, since encoding this site's real,
+// multi-megabyte photos synchronously in the Worker on every preview
+// load was enough to hit Cloudflare's CPU limit outright.
+function buildPreviewCsp(origin) {
+  return [
+    "default-src 'self' data: blob:",
+    // 'unsafe-inline' here is deliberate: styles.css and script.js are
+    // inlined directly (see inlinePreviewAssets()) rather than linked, for
+    // the same opaque-origin/cookie reason described above. This is scoped
+    // to /preview/* only (already auth-gated and iframe-sandboxed), never
+    // the public site's CSP.
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    `img-src 'self' ${origin} data:`,
+    "font-src https://fonts.gstatic.com",
+    "connect-src 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "sandbox allow-scripts",
+  ].join("; ");
+}
 
 const PUBLIC_CSP = [
   "default-src 'self'",
@@ -754,63 +766,57 @@ async function serveUpload(env, url) {
   });
 }
 
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 8192; // avoid call-stack limits from spreading huge arrays
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+// Was previously fixed by base64-inlining every local image directly into
+// the HTML response. That worked, but doing it synchronously in the Worker
+// for a multi-megabyte photo (this site's real photos run 1-3MB) burns
+// enough CPU to hit Cloudflare's Worker CPU limit outright (error 1102),
+// crashing the whole preview instead of just failing to load one picture.
+// Fixed properly instead: the actual reason a plain <img src="..."> didn't
+// load was two separate things, both now addressed without ever having to
+// touch image bytes in the Worker at all -
+//   1. The sandboxed iframe's document has an opaque origin, so the Clerk
+//      session cookie doesn't travel with a request it initiates, and the
+//      CSP keyword 'self' can never match anything from an opaque origin
+//      either. Local page links already carry a "pt" auth token as a query
+//      param for the same reason (see servePreview) - this reuses that.
+//   2. buildPreviewCsp's img-src fell through to default-src 'self', which -
+//      per point 1 - never matches from this iframe. buildPreviewCsp()
+//      below lists the request's actual origin explicitly instead of
+//      relying on 'self', which CSP does match regardless of the
+//      requesting document's own origin.
+// Rewrites every local <a href="..."> / <img src="..."> so it keeps
+// carrying the preview auth token forward, since it won't otherwise reach
+// a request the sandboxed document initiates itself (see the comment
+// above and on buildPreviewCsp).
+function appendPreviewToken(url, token) {
+  if (
+    /^([a-z][a-z0-9+.-]*:)?\/\//i.test(url) ||
+    /^(mailto|tel|javascript):/i.test(url) ||
+    url.startsWith("#") ||
+    url.startsWith("data:")
+  ) {
+    return url;
   }
-  return btoa(binary);
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}pt=${encodeURIComponent(token)}`;
 }
 
-async function fetchDeployedAssetBytes(env, requestUrl, path) {
-  const assetUrl = new URL(requestUrl);
-  assetUrl.pathname = `/${path}`;
-  assetUrl.search = "";
-  const response = await env.ASSETS.fetch(new Request(assetUrl));
-  if (!response.ok) {
-    return null;
-  }
-  return { bytes: await response.arrayBuffer(), contentType: response.headers.get("content-type") || "image/png" };
-}
-
-// See the comment on PREVIEW_CSP: replaces <link href="styles.css">,
-// <script src="script.js">, and every local <img src="..."> with their
-// actual content inlined (text for CSS/JS, a base64 data: URI for images),
-// so the preview iframe never needs a second authenticated/same-origin
-// sub-resource request - CSP 'self' doesn't reliably match those from a
-// sandboxed iframe's opaque origin, so they'd otherwise silently fail to
-// load. This covers both AI-uploaded photos (/uploads/<file>, from KV) and
-// the site's own pre-existing local images (e.g. assets/photo.png, from the
-// deployed static assets) - anything not already an http(s):// or data:
-// URL.
-// Rewrites every local <a href="..."> so it keeps carrying the preview
-// auth token forward. Once the user is inside the sandboxed iframe, any
-// link click is a navigation *initiated by the sandboxed (opaque-origin)
-// document itself*, which browsers treat as cross-site - so the Clerk
-// session cookie that authenticated the very first load doesn't get sent
-// for it. Query-string tokens aren't subject to that cookie rule, so this
-// keeps clicking between pages inside the preview working.
-function rewriteLocalLinks(html, token) {
+function rewriteLocalUrls(html, token) {
   if (!token) {
     return html;
   }
-  return html.replace(/<a\b([^>]*)\bhref=["']([^"']+)["']/gi, (match, attrs, href) => {
-    if (
-      /^([a-z][a-z0-9+.-]*:)?\/\//i.test(href) ||
-      /^(mailto|tel|javascript):/i.test(href) ||
-      href.startsWith("#") ||
-      href.startsWith("data:")
-    ) {
-      return match;
-    }
-    const separator = href.includes("?") ? "&" : "?";
-    return `<a${attrs}href="${href}${separator}pt=${encodeURIComponent(token)}"`;
+  let result = html.replace(/<a\b([^>]*)\bhref=["']([^"']+)["']/gi, (match, attrs, href) => {
+    const next = appendPreviewToken(href, token);
+    return next === href ? match : `<a${attrs}href="${next}"`;
   });
+  result = result.replace(/<img\b([^>]*)\bsrc=["']([^"']+)["']/gi, (match, attrs, src) => {
+    const next = appendPreviewToken(src, token);
+    return next === src ? match : `<img${attrs}src="${next}"`;
+  });
+  return result;
 }
 
-export async function inlinePreviewAssets(html, files, env, requestUrl, previewToken) {
+export function inlinePreviewAssets(html, files, previewToken) {
   let result = html;
   if (typeof files["styles.css"] === "string") {
     result = result.replace(
@@ -824,33 +830,7 @@ export async function inlinePreviewAssets(html, files, env, requestUrl, previewT
       `<script>${files["script.js"]}</script>`
     );
   }
-  const imgSrcs = [...result.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["']/gi)].map(m => m[1]);
-  const seen = new Set();
-  for (const src of imgSrcs) {
-    if (seen.has(src) || /^(https?:)?\/\//i.test(src) || src.startsWith("data:") || !env) {
-      continue;
-    }
-    seen.add(src);
-    let bytes;
-    let contentType;
-    if (src.startsWith("/uploads/")) {
-      const stored = await env.SITE_CONTENT.getWithMetadata(`upload:${src.slice("/uploads/".length)}`, "arrayBuffer");
-      if (stored?.value) {
-        bytes = stored.value;
-        contentType = stored.metadata?.contentType || "image/jpeg";
-      }
-    } else if (requestUrl) {
-      const fetched = await fetchDeployedAssetBytes(env, requestUrl, src.replace(/^\//, ""));
-      if (fetched) {
-        bytes = fetched.bytes;
-        contentType = fetched.contentType;
-      }
-    }
-    if (bytes) {
-      result = result.split(src).join(`data:${contentType};base64,${arrayBufferToBase64(bytes)}`);
-    }
-  }
-  return rewriteLocalLinks(result, previewToken);
+  return rewriteLocalUrls(result, previewToken);
 }
 
 async function servePreview(request, env, url) {
@@ -879,14 +859,12 @@ async function servePreview(request, env, url) {
       : path.endsWith(".css")
         ? "text/css; charset=utf-8"
         : "application/javascript; charset=utf-8";
-    const body = path.endsWith(".html")
-      ? await inlinePreviewAssets(draft.files[path], draft.files, env, request.url, previewToken)
-      : draft.files[path];
+    const body = path.endsWith(".html") ? inlinePreviewAssets(draft.files[path], draft.files, previewToken) : draft.files[path];
     return new Response(body, {
       headers: {
         "content-type": contentType,
         "cache-control": "no-store",
-        "content-security-policy": PREVIEW_CSP,
+        "content-security-policy": buildPreviewCsp(url.origin),
         "x-content-type-options": "nosniff",
         "referrer-policy": "no-referrer",
       },
