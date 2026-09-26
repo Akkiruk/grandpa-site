@@ -194,6 +194,67 @@ test("blocks authenticated cross-site mutations", async () => {
   assert.equal(response.status, 403);
 });
 
+test("blocks mutations with no Origin or Referer header", async () => {
+  const request = new Request("https://example.com/api/editor/publish", {
+    method: "POST",
+    headers: { cookie: "site_editor_session=unused" },
+    body: "{}",
+  });
+  const response = await handleApi(request, {}, new URL(request.url));
+  assert.equal(response.status, 403);
+});
+
+test("rejects a draft write when another request changed the draft first", async () => {
+  let draftGetCalls = 0;
+  const store = new Map();
+  const env = {
+    ADMIN_PASSWORD: "test-password",
+    SITE_CONTENT: {
+      async get(key, type) {
+        if (key === "draft:current") {
+          draftGetCalls += 1;
+          // The first two reads (the chat handler's own check, then getDraft's
+          // fallback read) see no draft. The third read - inside the guarded
+          // write - simulates a concurrent request having created one.
+          return draftGetCalls <= 2 ? null : "concurrent-write";
+        }
+        const value = store.get(key);
+        return type === "json" && value !== undefined ? JSON.parse(value) : value ?? null;
+      },
+      async put(key, value) { store.set(key, value); },
+      async delete(key) { store.delete(key); },
+    },
+    AI: {
+      async run() {
+        return {
+          response: { message: "Changed greeting.", operations: [{ path: "index.html", find: "Hello", replace: "Welcome" }] },
+        };
+      },
+    },
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.slice(1);
+        if (path === "styles.css") return new Response("body { color: black; }");
+        if (path === "script.js") return new Response("console.log('ready');");
+        return new Response("<!doctype html><html><head><title>Home</title></head><body>Hello</body></html>");
+      },
+    },
+  };
+  const call = async (path, method, body, cookie = "") => {
+    const request = new Request(`https://example.com/api/editor/${path}`, {
+      method,
+      headers: { "content-type": "application/json", cookie, origin: "https://example.com" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return handleApi(request, env, new URL(request.url));
+  };
+
+  const login = await call("login", "POST", { password: "test-password" });
+  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  const response = await call("chat", "POST", { message: "Change hello" }, cookie);
+  assert.equal(response.status, 409);
+});
+
 test("rate limits repeated login failures and rejects tampered sessions", async () => {
   const values = new Map();
   const env = {

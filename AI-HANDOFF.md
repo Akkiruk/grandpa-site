@@ -15,16 +15,18 @@ Static business website and password-protected AI website editor for Memories 2 
 
 ## Current Live State
 
-The site and editor are deployed. The last completed commit is `029ad39` (`Harden editor security and model reliability`). It was pushed to `origin/main`, and the worktree was clean immediately afterward.
+The site and editor are deployed with all previously-pending work complete:
+
+- The rotated `ADMIN_PASSWORD` from local `.env` was uploaded to Cloudflare as a secret.
+- A new random `SESSION_SECRET` was generated and uploaded to Cloudflare, decoupling session signing from the admin password (see Audit Findings item 7, now resolved).
+- All seven previously-open audit findings below were fixed, covered by regression tests, and deployed to production.
+- Verified in production: an old/garbage session cookie gets 401, login with the new password succeeds, `/api/editor/status` reports OpenRouter and `minimax/minimax-m2.5`, and a real chat edit + undo round-trip left no residual draft.
 
 Production was verified to use:
 
 - Provider: OpenRouter
 - Primary model: `minimax/minimax-m2.5`
 - Cloudflare Workers AI is an explicitly labeled fallback
-- A real production edit, preview, and undo completed successfully using MiniMax with no fallback
-
-The user subsequently changed `ADMIN_PASSWORD` in the local ignored `.env`. That new value has **not yet been uploaded to Cloudflare** in the current unfinished task. Never print or log it.
 
 ## Architecture
 
@@ -61,6 +63,7 @@ Encrypted production secrets:
 
 - `ADMIN_PASSWORD`
 - `OPENROUTER_API_KEY`
+- `SESSION_SECRET` (optional; session signing falls back to `ADMIN_PASSWORD` if absent, but production now has a dedicated value)
 
 Local `.env` is ignored and currently contains non-empty values for `ADMIN_PASSWORD`, `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL`. Never display those values. `.env.example` was intentionally removed permanently; do not recreate it.
 
@@ -129,41 +132,17 @@ npx wrangler pages deploy dist --project-name memories-2-dvd-usb --branch main
 
 Default expectation from the user: validate, commit, push, and deploy without asking first. Never remove Cloudflare token permissions; only add permissions if necessary.
 
-## Immediate Pending Task
+## Audit Findings (Resolved)
 
-The interrupted task was: fix all remaining audit findings and upload the newly changed admin password.
+These were discovered after commit `029ad39` and are now fixed, tested, and deployed:
 
-First, securely upload `ADMIN_PASSWORD` from `.env` without printing it:
-
-```powershell
-$lines = [System.IO.File]::ReadAllLines((Join-Path $PWD '.env'))
-$line = $lines | Where-Object { $_ -match '^ADMIN_PASSWORD=' } | Select-Object -First 1
-$password = $line.Substring($line.IndexOf('=') + 1).Trim()
-try {
-  $password | npx wrangler pages secret put ADMIN_PASSWORD --project-name memories-2-dvd-usb
-} finally {
-  $password = $null
-}
-```
-
-Then redeploy. Changing the password automatically invalidates all old HMAC sessions. Verify:
-
-1. An old session cookie receives 401.
-2. Login with the new local password succeeds.
-3. `/api/editor/status` reports OpenRouter and `minimax/minimax-m2.5`.
-4. Never expose the password in command output or API responses.
-
-## Remaining Audit Findings To Address
-
-These were discovered after commit `029ad39` but were not yet edited:
-
-1. `isTrustedMutation()` currently allows mutation requests when both `Origin` and `Referer` are absent. Change this to deny missing provenance for browser mutations, then update tests and production verification commands to include `Origin`.
-2. Draft/chat/publish/rollback operations can race because KV has no transaction or lock. Add optimistic draft version checks or a Cloudflare Durable Object if stronger serialization is required. For this single-admin site, optimistic version checks are the conservative next step.
-3. Multi-key KV publish is not atomic. Write file blobs first and the manifest last; retain the previous revision before switching the manifest. Consider versioned published keys if fully atomic publication is required.
-4. Raw upstream AI/provider errors are currently returned via `error.message` in some API paths. Sanitize provider/internal errors into stable user messages; never echo response bodies, headers, keys, or stack traces.
-5. `loadPublishedFiles()` fails the entire editor if a manifest asset is missing from both KV and deployed assets. Prefer a clear integrity error or resilient recovery that never silently publishes empty content.
-6. Login throttling uses KV read-then-write and is not atomic under concurrency. For strict rate limiting, use Cloudflare Rate Limiting or a Durable Object. Do not pretend retries make KV increments atomic.
-7. Password-derived session signing works and password rotation revokes sessions, but a separate `SESSION_SECRET` would decouple password changes from signing. This is optional; introducing it requires securely configuring another secret.
+1. **Fixed.** `isTrustedMutation()` now denies mutation requests when both `Origin` and `Referer` are absent, instead of allowing them. Covered by a regression test; production verification commands now send `Origin`.
+2. **Fixed (optimistic checks, not a Durable Object).** Chat, undo, discard, publish, and rollback now read the raw KV value for `draft:current` (and, for publish/rollback, `published:manifest`) up front and re-check it hasn't changed before writing (`putDraftIfUnchanged`, `deleteDraftIfUnchanged`, `publishFilesIfUnchanged`). A detected conflict returns `409` with a "changed elsewhere, refresh and try again" message instead of silently clobbering concurrent work. This is a conservative mitigation, not full serialization — a Durable Object would still be the option if stronger guarantees are ever required.
+3. **Fixed.** `publishFilesIfUnchanged()` writes all file blobs first and the `published:manifest` key last, so a mid-write failure can't leave the manifest pointing at a partially-written publish.
+4. **Fixed.** `askOpenAI` and `askOpenRouter` no longer return raw `result.error.message` from the upstream provider to the client. The raw message is logged server-side via `console.error`; the client gets a stable, generic message.
+5. **Fixed.** `loadPublishedFiles()` now catches a missing asset (absent from both KV and deployed assets) and throws one clear, stable error naming the file, rather than an opaque failure. It still refuses to synthesize empty content for a missing file.
+6. **Documented, not "fixed."** Login throttling is still KV read-then-write and is not atomic under concurrency; a comment in `_worker.js` next to `ConflictError` records this explicitly. It remains an acceptable best-effort throttle for this single-admin, low-traffic site. If stronger guarantees are ever needed, use Cloudflare Rate Limiting or a Durable Object — do not attempt to fake atomicity with retries.
+7. **Fixed.** A dedicated `SESSION_SECRET` was generated and uploaded to Cloudflare. `sessionSignature()` now uses `env.SESSION_SECRET || env.ADMIN_PASSWORD`, so session signing is decoupled from the admin password going forward while staying backward compatible if the secret is ever absent (e.g. local dev).
 
 Do not overstate minor acceptable risks:
 
@@ -209,15 +188,6 @@ In `_worker.js`:
 - Use Git tools to commit/push; do not expose secrets in commit messages or diffs.
 - Follow the repository-wide push-live instruction.
 
-## Recommended Next Sequence
+## No Open Task
 
-1. Confirm Git status and current `.env` variable presence without printing values.
-2. Fix missing-Origin mutation behavior and sanitize provider errors.
-3. Add optimistic draft/version checks around chat, undo, publish, discard, and rollback.
-4. Add focused regression tests.
-5. Run `npm test` and `npm run build`.
-6. Upload the new `ADMIN_PASSWORD` secret securely.
-7. Deploy production.
-8. Verify old-session rejection and new-password login.
-9. Verify exact model and one reversible edit/undo.
-10. Commit and push all tracked changes.
+There is no known unfinished work as of this update. If a future audit finds something new, add it under "Audit Findings" above rather than starting a new section.

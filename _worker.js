@@ -18,6 +18,11 @@ const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 8;
 const LOGIN_FAILURE_TTL_SECONDS = 10 * 60;
 
+// KV has no compare-and-swap primitive, so this throttle is a best-effort
+// deadline under concurrency, not a hard guarantee. Acceptable for a single-admin
+// site; use Cloudflare Rate Limiting or a Durable Object if that changes.
+class ConflictError extends Error {}
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -206,7 +211,7 @@ function constantTimeEqual(left, right) {
 async function sessionSignature(env, expiresAt) {
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(env.ADMIN_PASSWORD || ""),
+    new TextEncoder().encode(env.SESSION_SECRET || env.ADMIN_PASSWORD || ""),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
@@ -256,7 +261,7 @@ function isTrustedMutation(request, url) {
   }
   const referer = request.headers.get("referer");
   if (!referer) {
-    return true;
+    return false;
   }
   try {
     return new URL(referer).origin === url.origin;
@@ -285,7 +290,17 @@ async function loadPublishedFiles(env, requestUrl) {
   const entries = await Promise.all(
     manifest.map(async path => {
       const stored = await env.SITE_CONTENT.get(`published:${path}`);
-      return [path, stored ?? (await readAsset(env, requestUrl, path))];
+      if (stored !== null) {
+        return [path, stored];
+      }
+      try {
+        return [path, await readAsset(env, requestUrl, path)];
+      } catch {
+        throw new Error(
+          `Site content for ${path} is missing from both storage and the deployed assets. ` +
+          "Editing and publishing are paused until this is fixed to avoid publishing incomplete pages."
+        );
+      }
     })
   );
   return Object.fromEntries(entries);
@@ -356,7 +371,8 @@ async function askOpenAI(env, messages) {
   });
   const result = await response.json();
   if (!response.ok) {
-    throw new Error(result?.error?.message || "OpenAI could not complete the edit.");
+    console.error("OpenAI error", response.status, result?.error?.message);
+    throw new Error("OpenAI could not complete the edit. Please try again.");
   }
   return extractJson(result.choices?.[0]?.message?.content || "");
 }
@@ -388,7 +404,8 @@ export async function askOpenRouter(env, messages, fetchImpl = fetch) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(result?.error?.message || "OpenRouter could not complete the edit.");
+      console.error("OpenRouter error", response.status, result?.error?.message);
+      throw new Error("OpenRouter could not complete the edit. Please try again.");
     }
     const content = result.choices?.[0]?.message?.content || "";
     try {
@@ -501,12 +518,32 @@ async function saveRevision(env, files, description) {
   return revision;
 }
 
-async function publishFiles(env, files) {
+async function publishFilesIfUnchanged(env, files, expectedManifestRaw) {
   validateFiles(files);
-  await Promise.all([
-    ...Object.entries(files).map(([path, content]) => env.SITE_CONTENT.put(`published:${path}`, content)),
-    env.SITE_CONTENT.put("published:manifest", JSON.stringify(Object.keys(files))),
-  ]);
+  const currentManifestRaw = await env.SITE_CONTENT.get("published:manifest");
+  if (currentManifestRaw !== expectedManifestRaw) {
+    throw new ConflictError("The published site changed elsewhere. Refresh and try again.");
+  }
+  // Write file blobs first and the manifest last so a mid-write failure leaves
+  // the previous manifest (and therefore a consistent published site) in place.
+  await Promise.all(Object.entries(files).map(([path, content]) => env.SITE_CONTENT.put(`published:${path}`, content)));
+  await env.SITE_CONTENT.put("published:manifest", JSON.stringify(Object.keys(files)));
+}
+
+async function putDraftIfUnchanged(env, expectedRaw, nextDraft) {
+  const current = await env.SITE_CONTENT.get("draft:current");
+  if (current !== expectedRaw) {
+    throw new ConflictError("This draft changed elsewhere. Refresh and try again.");
+  }
+  await env.SITE_CONTENT.put("draft:current", JSON.stringify(nextDraft));
+}
+
+async function deleteDraftIfUnchanged(env, expectedRaw) {
+  const current = await env.SITE_CONTENT.get("draft:current");
+  if (current !== expectedRaw) {
+    throw new ConflictError("This draft changed elsewhere. Refresh and try again.");
+  }
+  await env.SITE_CONTENT.delete("draft:current");
 }
 
 export async function handleApi(request, env, url) {
@@ -573,7 +610,8 @@ export async function handleApi(request, env, url) {
     }
 
     try {
-      const storedDraft = await env.SITE_CONTENT.get("draft:current", "json");
+      const draftRaw = await env.SITE_CONTENT.get("draft:current");
+      const storedDraft = draftRaw ? JSON.parse(draftRaw) : null;
       const draft = storedDraft || (await getDraft(env, request.url));
       const conversation = await readConversation(env);
       const result = await requestEdits(env, message, draft.files, conversation);
@@ -606,19 +644,21 @@ export async function handleApi(request, env, url) {
           receipt,
         },
       ].slice(-12);
+      await putDraftIfUnchanged(env, draftRaw, updatedDraft);
       await Promise.all([
-        env.SITE_CONTENT.put("draft:current", JSON.stringify(updatedDraft)),
         saveConversation(env, nextConversation),
         deleteDraftCheckpoints(env, expiredUndoIds),
       ]);
       return json({ message: updatedDraft.message, draft: draftSummary(updatedDraft), receipt });
     } catch (error) {
-      return json({ error: error.message || "The edit could not be prepared." }, 422);
+      const status = error instanceof ConflictError ? 409 : 422;
+      return json({ error: error.message || "The edit could not be prepared." }, status);
     }
   }
 
   if (url.pathname === "/api/editor/undo" && request.method === "POST") {
-    const draft = await env.SITE_CONTENT.get("draft:current", "json");
+    const draftRaw = await env.SITE_CONTENT.get("draft:current");
+    const draft = draftRaw ? JSON.parse(draftRaw) : null;
     const checkpointId = draft?.undoIds?.at(-1);
     if (!draft || !checkpointId) {
       return json({ error: "There is no recent change to undo." }, 400);
@@ -636,9 +676,9 @@ export async function handleApi(request, env, url) {
     ].slice(-12);
 
     if (checkpoint.hadDraft) {
-      await env.SITE_CONTENT.put("draft:current", JSON.stringify(checkpoint.draft));
+      await putDraftIfUnchanged(env, draftRaw, checkpoint.draft);
     } else {
-      await env.SITE_CONTENT.delete("draft:current");
+      await deleteDraftIfUnchanged(env, draftRaw);
     }
     await Promise.all([
       env.SITE_CONTENT.delete(`draft-undo:${checkpointId}`),
@@ -653,22 +693,25 @@ export async function handleApi(request, env, url) {
   }
 
   if (url.pathname === "/api/editor/discard" && request.method === "POST") {
-    const draft = await env.SITE_CONTENT.get("draft:current", "json");
+    const draftRaw = await env.SITE_CONTENT.get("draft:current");
+    const draft = draftRaw ? JSON.parse(draftRaw) : null;
     await deleteDraftCheckpoints(env, draft?.undoIds);
-    await env.SITE_CONTENT.delete("draft:current");
+    await deleteDraftIfUnchanged(env, draftRaw);
     return json({ ok: true });
   }
 
   if (url.pathname === "/api/editor/publish" && request.method === "POST") {
-    const draft = await env.SITE_CONTENT.get("draft:current", "json");
+    const draftRaw = await env.SITE_CONTENT.get("draft:current");
+    const draft = draftRaw ? JSON.parse(draftRaw) : null;
     if (!draft) {
       return json({ error: "There are no changes to publish." }, 400);
     }
+    const manifestRaw = await env.SITE_CONTENT.get("published:manifest");
     const currentFiles = await loadPublishedFiles(env, request.url);
     await saveRevision(env, currentFiles, `Before: ${draft.message}`);
-    await publishFiles(env, draft.files);
+    await publishFilesIfUnchanged(env, draft.files, manifestRaw);
     await deleteDraftCheckpoints(env, draft.undoIds);
-    await env.SITE_CONTENT.delete("draft:current");
+    await deleteDraftIfUnchanged(env, draftRaw);
     return json({ ok: true, message: "The website is live with your changes." });
   }
 
@@ -678,9 +721,10 @@ export async function handleApi(request, env, url) {
     if (!revision) {
       return json({ error: "That saved version was not found." }, 404);
     }
+    const manifestRaw = await env.SITE_CONTENT.get("published:manifest");
     const currentFiles = await loadPublishedFiles(env, request.url);
     await saveRevision(env, currentFiles, `Before restoring ${revision.createdAt}`);
-    await publishFiles(env, revision.files);
+    await publishFilesIfUnchanged(env, revision.files, manifestRaw);
     await env.SITE_CONTENT.delete("draft:current");
     return json({ ok: true, message: "The earlier version is live again." });
   }
@@ -765,7 +809,8 @@ export default {
       return await servePublished(request, env, url);
     } catch (error) {
       if (url.pathname.startsWith("/api/editor/")) {
-        return json({ error: error.message || "Unexpected editor error." }, 500);
+        const status = error instanceof ConflictError ? 409 : 500;
+        return json({ error: error.message || "Unexpected editor error." }, status);
       }
       return env.ASSETS.fetch(request);
     }
