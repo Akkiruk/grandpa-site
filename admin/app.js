@@ -195,7 +195,12 @@ async function loadStatus() {
 // state and strands the user on a blank step.
 async function initAuth() {
   await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
-  window.Clerk.mountSignIn(clerkSignIn);
+  // forceRedirectUrl: without it, Clerk sends the browser to "/" after any
+  // completed sign-in (its hardcoded default), not back to this page. This
+  // is safe now that mountSignIn is only ever called once (see comment
+  // above) - the earlier attempt at this caused an infinite loop because it
+  // combined with the re-mounting bug, not because of this option itself.
+  window.Clerk.mountSignIn(clerkSignIn, { forceRedirectUrl: "/admin/" });
   // "Manage account" here is where a user can add a password to an account
   // that was originally created without one (e.g. via a since-disabled OAuth
   // sign-in), so future sign-ins don't require a fresh email code every time.
