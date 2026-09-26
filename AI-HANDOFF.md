@@ -17,12 +17,21 @@ Static business website and Clerk-authenticated AI website editor for Memories 2
 
 The editor's login system was fully migrated from a single shared password to **Clerk** (real accounts, invite-based signup). This replaced the entire previous password/session-cookie/login-throttle system, which has been deleted from the codebase — there is no fallback to it.
 
-- Clerk is a test-mode instance (`pk_test_...` / `sk_test_...`), Frontend API domain `polite-mammoth-8157.clerk.accounts.dev`.
-- Clerk's dashboard is configured for invitation-only signup (no public sign-ups) — the user who created the Clerk app is the first/primary user; they invite others (e.g. their grandpa) by email from the Clerk dashboard's Users/Invitations screen. There is no in-app invite UI; this is entirely a Clerk-dashboard action.
+- Clerk is a test-mode instance (`pk_test_...` / `sk_test_...`), Frontend API domain `polite-mammoth-8157.clerk.accounts.dev`. Instance ID: `ins_3JqgqrkSa1SR4mnum39MKnTwA7G`.
+- **Google OAuth is disabled** and **sign-up mode is "restricted" (invite-only)** — both confirmed live via the API (see "Checking Clerk config" below), not just assumed from dashboard clicks. Only `email_code`/`email_link`/`password`/`reset_password_email_code` remain as sign-in first factors.
+- **Why Google OAuth is off**: it requires a full-page redirect away to Google and back. This Clerk instance is a *development* instance running on a real custom domain (not `localhost`), which forces Clerk to sync sessions via a URL-based handshake (`__clerk_db_jwt`) instead of a normal cookie. That combination is a documented, known-flaky failure mode — we hit both a wrong post-redirect landing page and then a genuine infinite reload loop trying to fix it with `forceRedirectUrl`/`signInForceRedirectUrl`. **Do not re-enable Google OAuth (or any OAuth social connection) on this instance without first promoting to a production Clerk instance with a verified custom domain** (which also requires registering a dedicated Google Cloud OAuth app — production instances can't use Clerk's shared dev OAuth credentials). Email code sign-in has no such redirect and is not affected by this.
+- The primary admin account already exists in Clerk (`user_3JqjmYtD64PIns43R4ffctqqwXd`, email `rboone98s5@gmail.com`, originally created via the now-disabled Google sign-in). Restricted mode only blocks *new* sign-ups; this existing user can still sign in via email code to the same address.
 - `CLERK_SECRET_KEY` is a Cloudflare secret. `CLERK_PUBLISHABLE_KEY` is a plain `[vars]` entry in `wrangler.toml` (publishable keys are meant to be public — they ship in client-side JS) and is also hardcoded directly into `admin/index.html`'s Clerk script tags.
 - The old `ADMIN_PASSWORD` and `SESSION_SECRET` secrets were deleted from Cloudflare and from `.env`. Do not recreate them — any future auth changes should go through Clerk (e.g. roles/organizations), not a reintroduced password system.
-- Verified in production: an unauthenticated `/api/editor/status` request returns 401; the admin page serves with the Clerk script tags and an updated CSP that allows Clerk's domains.
-- **Not yet verified by an agent**: the actual browser sign-in flow (Clerk's mounted `SignIn` UI, email OTP, session token attaches correctly to `/api/editor/*` calls). This requires a real browser and a human completing the email step — ask the user to confirm this works before considering the migration fully done.
+- Verified in production: an unauthenticated `/api/editor/status` request returns 401; the admin page serves with the Clerk script tags and a CSP scoped to Clerk's domains.
+- **Not yet verified by an agent**: the actual browser sign-in flow end to end (entering an email, receiving the code, submitting it, landing in the editor). This requires a human with access to the inbox — ask the user to confirm this works if it hasn't been confirmed since the Google-OAuth-disable change.
+
+## Checking/Changing Clerk Config
+
+Two ways to inspect or change the live Clerk instance from a terminal, both using `CLERK_SECRET_KEY` from `.env` (no interactive browser login needed for read-mostly operations):
+
+1. **Clerk CLI** (`npm install -g clerk`, real official package despite the generic name). Run non-interactively by exporting the key: `CLERK_SECRET_KEY=<key> clerk users list`, `clerk doctor`, `clerk config pull`, etc. `clerk auth login` (full account claim, needed for `config schema`/`config patch`/`deploy`) requires an interactive browser OAuth flow — an agent cannot complete this without the user.
+2. **Raw API calls**: `GET https://polite-mammoth-8157.clerk.accounts.dev/v1/environment` (public Frontend API, no auth needed) returns `user_settings.sign_up.mode` and `user_settings.social.oauth_google.enabled` — the two settings that mattered here. `GET/PATCH https://api.clerk.com/v1/instance` and `/v1/instance/restrictions` (Bearer `CLERK_SECRET_KEY`) cover a different, narrower set of instance settings (allowlist/blocklist, session syncing, etc.) — **neither the Backend API nor the CLI's `config` command exposes a field to toggle sign-up mode or individual social connections programmatically; these are dashboard-only** (Configure → Restrictions → Sign-up mode; Configure → SSO Connections). Confirmed by directly probing the endpoints, not just reading docs.
 
 Production AI provider (unchanged by this migration):
 
@@ -193,7 +202,8 @@ In `admin/app.js`:
 
 ## Open Follow-Ups
 
-1. **User should verify the real sign-in flow in a browser** (mount of Clerk's `SignIn` UI, email OTP round-trip, editor unlocking after sign-in, sign-out via the header button). This was deployed and unit-tested but not click-tested in an actual browser by an agent.
+1. **User should verify the real sign-in flow in a browser** with email code (mount of Clerk's `SignIn` UI, code round-trip, editor unlocking after sign-in, sign-out via the header button). Confirmed via API that the config is correct (restricted mode, Google off); not yet click-tested end to end by a human since that change.
 2. If a browser console shows CSP violations on `/admin/`, the CSP in `_headers` may need additional Clerk domains — check the blocked resource in the console error and add its origin to the relevant directive.
 3. No role/permission distinction exists yet between the primary admin and invited users (e.g. grandpa) — anyone with a valid Clerk account for this app can fully use the editor. Add Clerk Organizations/roles if that ever needs to change.
-4. Consider promoting the Clerk instance from test mode to a production instance if email deliverability or Clerk's test-mode limits become a problem.
+4. Grandpa has not been invited yet — that's a Clerk Dashboard action (Users → Invitations) or `clerk` CLI once his email address is known. No code involved.
+5. Do not re-enable Google (or any OAuth) sign-in on this dev instance without promoting to a production Clerk instance with a verified custom domain first — see "Why Google OAuth is off" above. This is not a temporary workaround to casually revert; it's a real architectural constraint of dev-instance-on-a-real-domain.
