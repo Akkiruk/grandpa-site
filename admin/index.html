@@ -12,18 +12,29 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="admin.css" />
+    <script
+      defer
+      crossorigin="anonymous"
+      src="https://polite-mammoth-8157.clerk.accounts.dev/npm/@clerk/ui@1/dist/ui.browser.js"
+      type="text/javascript"
+    ></script>
+    <script
+      defer
+      crossorigin="anonymous"
+      data-clerk-publishable-key="pk_test_cG9saXRlLW1hbW1vdGgtODE1Ny5jbGVyay5hY2NvdW50cy5kZXYk"
+      src="https://polite-mammoth-8157.clerk.accounts.dev/npm/@clerk/clerk-js@6/dist/clerk.browser.js"
+      type="text/javascript"
+    ></script>
   </head>
   <body>
     <section class="login-view" id="login-view">
-      <form class="login-panel" id="login-form">
+      <div class="login-panel">
         <div class="brand-mark" aria-hidden="true">M</div>
         <p class="eyebrow">Memories 2 DVD - USB</p>
         <h1>Website editor</h1>
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <div id="clerk-sign-in"></div>
         <p class="form-error" id="login-error" role="alert"></p>
-        <button class="primary-button" type="submit">Sign in</button>
-      </form>
+      </div>
     </section>
 
     <div class="editor-view" id="editor-view" hidden>

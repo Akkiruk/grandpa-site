@@ -1,6 +1,6 @@
 const loginView = document.getElementById("login-view");
 const editorView = document.getElementById("editor-view");
-const loginForm = document.getElementById("login-form");
+const clerkSignIn = document.getElementById("clerk-sign-in");
 const loginError = document.getElementById("login-error");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message");
@@ -27,9 +27,14 @@ let state = {
 let currentPreviewPath = "index.html";
 
 async function api(path, options = {}) {
+  const token = window.Clerk?.session ? await window.Clerk.session.getToken() : null;
   const response = await fetch(`/api/editor/${path}`, {
     credentials: "same-origin",
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
     ...options,
   });
   const data = await response.json().catch(() => ({}));
@@ -176,30 +181,36 @@ async function loadStatus() {
   } catch (error) {
     if (error.status === 401) {
       setAuthenticated(false);
+      mountSignIn();
       return;
     }
     loginError.textContent = error.message;
   }
 }
 
-loginForm.addEventListener("submit", async event => {
-  event.preventDefault();
-  loginError.textContent = "";
-  const submitButton = loginForm.querySelector("button[type=submit]");
-  submitButton.disabled = true;
-  try {
-    await api("login", {
-      method: "POST",
-      body: JSON.stringify({ password: loginForm.password.value }),
-    });
-    loginForm.reset();
-    await loadStatus();
-  } catch (error) {
-    loginError.textContent = error.message;
-  } finally {
-    submitButton.disabled = false;
+function mountSignIn() {
+  clerkSignIn.innerHTML = "";
+  window.Clerk.mountSignIn(clerkSignIn);
+}
+
+async function initAuth() {
+  await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+  window.Clerk.addListener(({ user }) => {
+    if (user) {
+      setAuthenticated(true);
+      loadStatus();
+    } else {
+      setAuthenticated(false);
+      mountSignIn();
+    }
+  });
+  if (window.Clerk.user) {
+    setAuthenticated(true);
+    loadStatus();
+  } else {
+    mountSignIn();
   }
-});
+}
 
 chatForm.addEventListener("submit", async event => {
   event.preventDefault();
@@ -334,8 +345,9 @@ document.getElementById("mobile-preview").addEventListener("click", () => {
 });
 document.getElementById("close-preview").addEventListener("click", () => document.body.classList.remove("show-preview"));
 document.getElementById("logout-button").addEventListener("click", async () => {
-  await api("logout", { method: "POST", body: "{}" });
-  setAuthenticated(false);
+  await window.Clerk.signOut();
 });
 
-loadStatus();
+window.addEventListener("load", () => {
+  initAuth();
+});

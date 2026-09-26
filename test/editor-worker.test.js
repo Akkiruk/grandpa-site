@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  __setClerkClientFactory,
   applyOperations,
   askOpenRouter,
   askWorkersAI,
@@ -17,6 +18,24 @@ const files = {
   "styles.css": "body { color: black; }",
   "script.js": "console.log('ready');",
 };
+
+function fakeClerkClient({ userId = "user_test", secretKey = "sk_test" } = {}) {
+  return env => {
+    if (env.secretKey !== secretKey || !userId) {
+      return { authenticateRequest: async () => ({ toAuth: () => ({ userId: null }) }) };
+    }
+    return { authenticateRequest: async () => ({ toAuth: () => ({ userId }) }) };
+  };
+}
+
+function signedInEnv(overrides = {}) {
+  __setClerkClientFactory(fakeClerkClient());
+  return { CLERK_SECRET_KEY: "sk_test", CLERK_PUBLISHABLE_KEY: "pk_test", ...overrides };
+}
+
+test.afterEach(() => {
+  __setClerkClientFactory(null);
+});
 
 test("applies an exact guarded edit", () => {
   const result = applyOperations(files, [
@@ -134,7 +153,7 @@ test("undo restores stacked drafts and then returns to the live site", async () 
   };
   let aiCall = 0;
   const env = {
-    ADMIN_PASSWORD: "test-password",
+    ...signedInEnv(),
     SITE_CONTENT: kv,
     AI: {
       async run() {
@@ -157,26 +176,24 @@ test("undo restores stacked drafts and then returns to the live site", async () 
       },
     },
   };
-  const call = async (path, method, body, cookie = "") => {
+  const call = async (path, method, body) => {
     const request = new Request(`https://example.com/api/editor/${path}`, {
       method,
-      headers: { "content-type": "application/json", cookie, origin: "https://example.com" },
+      headers: { "content-type": "application/json", origin: "https://example.com" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return handleApi(request, env, new URL(request.url));
   };
 
-  const login = await call("login", "POST", { password: "test-password" });
-  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
-  assert.equal((await call("chat", "POST", { message: "Change hello" }, cookie)).status, 200);
-  assert.equal((await call("chat", "POST", { message: "Change it again" }, cookie)).status, 200);
+  assert.equal((await call("chat", "POST", { message: "Change hello" })).status, 200);
+  assert.equal((await call("chat", "POST", { message: "Change it again" })).status, 200);
   assert.match((await kv.get("draft:current", "json")).files["index.html"], /Howdy/);
 
-  const firstUndo = await (await call("undo", "POST", {}, cookie)).json();
+  const firstUndo = await (await call("undo", "POST", {})).json();
   assert.equal(firstUndo.draft.canUndo, true);
   assert.match((await kv.get("draft:current", "json")).files["index.html"], /Welcome/);
 
-  const secondUndo = await (await call("undo", "POST", {}, cookie)).json();
+  const secondUndo = await (await call("undo", "POST", {})).json();
   assert.equal(secondUndo.draft, null);
   assert.equal(await kv.get("draft:current", "json"), null);
 });
@@ -184,31 +201,37 @@ test("undo restores stacked drafts and then returns to the live site", async () 
 test("blocks authenticated cross-site mutations", async () => {
   const request = new Request("https://example.com/api/editor/publish", {
     method: "POST",
-    headers: {
-      cookie: "site_editor_session=unused",
-      origin: "https://attacker.example",
-    },
+    headers: { origin: "https://attacker.example" },
     body: "{}",
   });
-  const response = await handleApi(request, {}, new URL(request.url));
+  const response = await handleApi(request, signedInEnv(), new URL(request.url));
   assert.equal(response.status, 403);
 });
 
 test("blocks mutations with no Origin or Referer header", async () => {
   const request = new Request("https://example.com/api/editor/publish", {
     method: "POST",
-    headers: { cookie: "site_editor_session=unused" },
     body: "{}",
   });
-  const response = await handleApi(request, {}, new URL(request.url));
+  const response = await handleApi(request, signedInEnv(), new URL(request.url));
   assert.equal(response.status, 403);
+});
+
+test("rejects requests without a valid Clerk session", async () => {
+  __setClerkClientFactory(fakeClerkClient({ userId: null }));
+  const request = new Request("https://example.com/api/editor/status", {
+    headers: { origin: "https://example.com" },
+  });
+  const env = { CLERK_SECRET_KEY: "sk_test", CLERK_PUBLISHABLE_KEY: "pk_test" };
+  const response = await handleApi(request, env, new URL(request.url));
+  assert.equal(response.status, 401);
 });
 
 test("rejects a draft write when another request changed the draft first", async () => {
   let draftGetCalls = 0;
   const store = new Map();
   const env = {
-    ADMIN_PASSWORD: "test-password",
+    ...signedInEnv(),
     SITE_CONTENT: {
       async get(key, type) {
         if (key === "draft:current") {
@@ -240,54 +263,13 @@ test("rejects a draft write when another request changed the draft first", async
       },
     },
   };
-  const call = async (path, method, body, cookie = "") => {
-    const request = new Request(`https://example.com/api/editor/${path}`, {
-      method,
-      headers: { "content-type": "application/json", cookie, origin: "https://example.com" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    return handleApi(request, env, new URL(request.url));
-  };
-
-  const login = await call("login", "POST", { password: "test-password" });
-  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
-  const response = await call("chat", "POST", { message: "Change hello" }, cookie);
-  assert.equal(response.status, 409);
-});
-
-test("rate limits repeated login failures and rejects tampered sessions", async () => {
-  const values = new Map();
-  const env = {
-    ADMIN_PASSWORD: "test-password",
-    SITE_CONTENT: {
-      async get(key) { return values.get(key) ?? null; },
-      async put(key, value) { values.set(key, value); },
-      async delete(key) { values.delete(key); },
-    },
-  };
-  const login = password => {
-    const request = new Request("https://example.com/api/editor/login", {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "https://example.com", "cf-connecting-ip": "192.0.2.10" },
-      body: JSON.stringify({ password }),
-    });
-    return handleApi(request, env, new URL(request.url));
-  };
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    assert.equal((await login("wrong-password")).status, 401);
-  }
-  const limited = await login("test-password");
-  assert.equal(limited.status, 429);
-  assert.equal(limited.headers.get("retry-after"), "600");
-
-  values.clear();
-  const success = await login("test-password");
-  const cookie = success.headers.get("set-cookie").split(";", 1)[0];
-  const statusRequest = new Request("https://example.com/api/editor/status", {
-    headers: { cookie: `${cookie}tampered` },
+  const request = new Request("https://example.com/api/editor/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://example.com" },
+    body: JSON.stringify({ message: "Change hello" }),
   });
-  assert.equal((await handleApi(statusRequest, env, new URL(statusRequest.url))).status, 401);
+  const response = await handleApi(request, env, new URL(request.url));
+  assert.equal(response.status, 409);
 });
 
 test("uses the configured OpenRouter coding model without exposing the key", async () => {

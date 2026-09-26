@@ -1,3 +1,5 @@
+import { createClerkClient } from "@clerk/backend";
+
 const BASE_FILES = [
   "index.html",
   "about.html",
@@ -12,15 +14,9 @@ const MAX_FILE_BYTES = 300_000;
 const MAX_MESSAGE_LENGTH = 4_000;
 const HISTORY_LIMIT = 20;
 const DRAFT_UNDO_LIMIT = 8;
-const SESSION_COOKIE = "site_editor_session";
 const DEFAULT_OPENROUTER_MODEL = "minimax/minimax-m2.5";
-const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
-const LOGIN_FAILURE_LIMIT = 8;
-const LOGIN_FAILURE_TTL_SECONDS = 10 * 60;
+const AUTHORIZED_PARTIES = ["https://memories2dvdorusb.com", "https://memories-2-dvd-usb.pages.dev"];
 
-// KV has no compare-and-swap primitive, so this throttle is a best-effort
-// deadline under concurrency, not a hard guarantee. Acceptable for a single-admin
-// site; use Cloudflare Rate Limiting or a Durable Object if that changes.
 class ConflictError extends Error {}
 
 const JSON_HEADERS = {
@@ -177,78 +173,33 @@ function json(data, status = 200, headers = {}) {
   });
 }
 
-function parseCookies(request) {
-  return Object.fromEntries(
-    (request.headers.get("cookie") || "")
-      .split(";")
-      .map(part => part.trim())
-      .filter(Boolean)
-      .map(part => {
-        const separator = part.indexOf("=");
-        return separator === -1
-          ? [part, ""]
-          : [part.slice(0, separator), decodeURIComponent(part.slice(separator + 1))];
-      })
-  );
+let clerkClientFactory = createClerkClient;
+
+// Test-only seam: lets tests substitute a fake Clerk client instead of making
+// real network/JWKS calls. Production code never calls this.
+export function __setClerkClientFactory(factory) {
+  clerkClientFactory = factory || createClerkClient;
 }
 
-async function sha256(value) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function constantTimeEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-  return difference === 0;
-}
-
-async function sessionSignature(env, expiresAt) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(env.SESSION_SECRET || env.ADMIN_PASSWORD || ""),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(`memories-editor:${expiresAt}`)
-  );
-  return Array.from(new Uint8Array(signature), byte => byte.toString(16).padStart(2, "0")).join("");
-}
-
-async function createSession(env) {
-  const expiresAt = Date.now() + SESSION_DURATION_MS;
-  return `${expiresAt}.${await sessionSignature(env, expiresAt)}`;
+function clerkClientFor(env) {
+  return clerkClientFactory({
+    secretKey: env.CLERK_SECRET_KEY,
+    publishableKey: env.CLERK_PUBLISHABLE_KEY,
+  });
 }
 
 async function isAuthenticated(request, env) {
-  if (!env.ADMIN_PASSWORD) {
+  if (!env.CLERK_SECRET_KEY) {
     return false;
   }
-  const supplied = parseCookies(request)[SESSION_COOKIE] || "";
-  const separator = supplied.indexOf(".");
-  if (separator === -1) {
+  try {
+    const requestState = await clerkClientFor(env).authenticateRequest(request, {
+      authorizedParties: AUTHORIZED_PARTIES,
+    });
+    return Boolean(requestState.toAuth()?.userId);
+  } catch {
     return false;
   }
-  const expiresAt = Number(supplied.slice(0, separator));
-  const signature = supplied.slice(separator + 1);
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    return false;
-  }
-  return constantTimeEqual(signature, await sessionSignature(env, expiresAt));
-}
-
-async function loginFailureKey(request) {
-  const client = request.headers.get("cf-connecting-ip") || "unknown-client";
-  return `login-failures:${await sha256(client)}`;
 }
 
 function isTrustedMutation(request, url) {
@@ -549,34 +500,6 @@ async function deleteDraftIfUnchanged(env, expectedRaw) {
 export async function handleApi(request, env, url) {
   if (!isTrustedMutation(request, url)) {
     return json({ error: "That request was blocked for safety." }, 403);
-  }
-
-  if (url.pathname === "/api/editor/login" && request.method === "POST") {
-    const failureKey = await loginFailureKey(request);
-    const failures = Number(await env.SITE_CONTENT.get(failureKey)) || 0;
-    if (failures >= LOGIN_FAILURE_LIMIT) {
-      return json({ error: "Too many sign-in attempts. Please wait ten minutes." }, 429, { "retry-after": "600" });
-    }
-    const body = await request.json().catch(() => ({}));
-    const suppliedHash = await sha256(String(body.password || ""));
-    const expectedHash = await sha256(env.ADMIN_PASSWORD || "missing-secret");
-    if (!env.ADMIN_PASSWORD || !constantTimeEqual(suppliedHash, expectedHash)) {
-      await env.SITE_CONTENT.put(failureKey, String(failures + 1), { expirationTtl: LOGIN_FAILURE_TTL_SECONDS });
-      return json({ error: "That password did not work." }, 401);
-    }
-    await env.SITE_CONTENT.delete(failureKey);
-    const session = await createSession(env);
-    return json(
-      { ok: true },
-      200,
-      { "set-cookie": `${SESSION_COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000` }
-    );
-  }
-
-  if (url.pathname === "/api/editor/logout" && request.method === "POST") {
-    return json({ ok: true }, 200, {
-      "set-cookie": `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`,
-    });
   }
 
   if (!(await isAuthenticated(request, env))) {
