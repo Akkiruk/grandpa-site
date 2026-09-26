@@ -581,3 +581,28 @@ test("retries malformed OpenRouter output with the chosen model", async () => {
   assert.match(requests[1].messages.at(-1).content, /Return only the required JSON object/);
   assert.equal(result.message, "Done");
 });
+
+test("gives an actionable error instead of a generic failure when a request is too big to finish in one step", async () => {
+  // A request asking for several new pages plus sitewide edits can get cut
+  // off mid-JSON before it ever finishes - retrying with the same token
+  // budget would just truncate again in the same place, so this should
+  // fail fast with a message that tells the user how to actually get past
+  // it, instead of the generic "invalid edit" that gave no indication of
+  // why or what to do differently.
+  let requestCount = 0;
+  await assert.rejects(
+    askOpenRouter(
+      { OPENROUTER_API_KEY: "test-key" },
+      [{ role: "user", content: "Build six new pages and update the whole site" }],
+      async () => {
+        requestCount += 1;
+        return new Response(
+          JSON.stringify({ choices: [{ finish_reason: "length", message: { content: '{"message":"Doing it","operations":[{"path":"a.html"' } }] }),
+          { headers: { "content-type": "application/json" } }
+        );
+      }
+    ),
+    /too much at once/
+  );
+  assert.equal(requestCount, 1);
+});
