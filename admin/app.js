@@ -170,6 +170,12 @@ async function undoLatestEdit(event) {
 }
 
 async function loadStatus() {
+  // Never let a status refresh overwrite the conversation while a message is
+  // actively in flight - it would wipe the optimistic "user message + typing
+  // bubble" UI with stale server state that doesn't include it yet.
+  if (state.busy) {
+    return;
+  }
   try {
     const data = await api("status", { method: "GET" });
     state = { ...state, ...data };
@@ -212,14 +218,23 @@ async function initAuth() {
   // that was originally created without one (e.g. via a since-disabled OAuth
   // sign-in), so future sign-ins don't require a fresh email code every time.
   window.Clerk.mountUserButton(clerkUserButton);
+  // Clerk fires this listener repeatedly in the background as it silently
+  // refreshes the session token (not just on an actual sign-in/out). Only
+  // call loadStatus() on a genuine signed-out -> signed-in transition - it
+  // wipes and rebuilds the whole conversation from the server's last-saved
+  // state, so calling it on every background refresh could wipe an in-flight
+  // chat message before the server has finished saving it.
+  let wasSignedIn = Boolean(window.Clerk.user);
   window.Clerk.addListener(({ user }) => {
-    if (user) {
+    const isSignedIn = Boolean(user);
+    if (isSignedIn && !wasSignedIn) {
       setAuthenticated(true);
       loadStatus();
-    } else {
+    } else if (!isSignedIn) {
       setAuthenticated(false);
       mountSignInIfNeeded();
     }
+    wasSignedIn = isSignedIn;
   });
   if (window.Clerk.user) {
     setAuthenticated(true);

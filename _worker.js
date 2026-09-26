@@ -575,6 +575,7 @@ export async function handleApi(request, env, url) {
       return json({ message: updatedDraft.message, draft: draftSummary(updatedDraft), receipt });
     } catch (error) {
       const status = error instanceof ConflictError ? 409 : 422;
+      console.error(`chat failed (status ${status}):`, error.message, error.stack);
       return json({ error: error.message || "The edit could not be prepared." }, status);
     }
   }
@@ -733,8 +734,12 @@ export default {
     } catch (error) {
       if (url.pathname.startsWith("/api/editor/")) {
         const status = error instanceof ConflictError ? 409 : 500;
+        if (!(error instanceof ConflictError)) {
+          console.error(`unhandled error on ${request.method} ${url.pathname}:`, error.message, error.stack);
+        }
         return json({ error: error.message || "Unexpected editor error." }, status);
       }
+      console.error(`unhandled error serving ${url.pathname}:`, error.message, error.stack);
       return env.ASSETS.fetch(request);
     }
   },
