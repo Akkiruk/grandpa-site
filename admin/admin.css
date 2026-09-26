@@ -194,10 +194,13 @@ h1 {
 
 .editor-view {
   height: 100%;
+  display: flex;
+  flex-direction: column;
   background: var(--surface-soft);
 }
 
 .editor-header {
+  flex: 0 0 auto;
   height: 68px;
   display: flex;
   align-items: center;
@@ -243,6 +246,7 @@ h1 {
 }
 
 .live-status-banner {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -255,7 +259,14 @@ h1 {
 }
 
 .editor-main {
-  height: calc(100% - 68px);
+  /* flex (not a height: calc()) so this always fills whatever space is
+     left after the header and the live-status-banner, whether or not the
+     banner is showing - a fixed calc() here previously only ever
+     subtracted the header's height, so when the banner appeared it made
+     the whole page taller than the viewport and pushed the message box
+     below the fold, forcing a scroll to reach it. */
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
 }
@@ -711,7 +722,6 @@ h1 {
   }
 
   .editor-main {
-    height: calc(100% - 62px);
     display: block;
   }
 
