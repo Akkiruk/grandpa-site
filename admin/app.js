@@ -195,12 +195,16 @@ async function loadStatus() {
 // state and strands the user on a blank step.
 async function initAuth() {
   await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
-  // forceRedirectUrl: without it, Clerk sends the browser to "/" after any
-  // completed sign-in (its hardcoded default), not back to this page. This
-  // is safe now that mountSignIn is only ever called once (see comment
-  // above) - the earlier attempt at this caused an infinite loop because it
-  // combined with the re-mounting bug, not because of this option itself.
-  window.Clerk.mountSignIn(clerkSignIn, { forceRedirectUrl: "/admin/" });
+  // Deliberately no forceRedirectUrl here. Overriding Clerk's redirect
+  // target client-side has caused infinite reload loops twice on this dev
+  // instance (its session-sync handshake seems to fight any client-side
+  // override of where it lands). Instead, the correct destination is set in
+  // the Clerk Dashboard itself (Configure -> Paths -> Home URL /
+  // after-sign-in URL -> /admin/), which lets Clerk redirect to the right
+  // place as its own native default instead of us overriding it after the
+  // fact. Do not re-add a client-side redirect override without confirming
+  // the Dashboard Paths config first.
+  window.Clerk.mountSignIn(clerkSignIn);
   // "Manage account" here is where a user can add a password to an account
   // that was originally created without one (e.g. via a since-disabled OAuth
   // sign-in), so future sign-ins don't require a fresh email code every time.
