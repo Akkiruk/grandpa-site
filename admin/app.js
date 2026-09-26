@@ -1,6 +1,7 @@
 const loginView = document.getElementById("login-view");
 const editorView = document.getElementById("editor-view");
 const clerkSignIn = document.getElementById("clerk-sign-in");
+const clerkUserButton = document.getElementById("clerk-user-button");
 const loginError = document.getElementById("login-error");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message");
@@ -193,11 +194,24 @@ function mountSignIn() {
   window.Clerk.mountSignIn(clerkSignIn);
 }
 
+let userButtonMounted = false;
+function mountUserButtonOnce() {
+  if (userButtonMounted) {
+    return;
+  }
+  userButtonMounted = true;
+  // "Manage account" here is where a user can add a password to an account
+  // that was originally created without one (e.g. via a since-disabled OAuth
+  // sign-in), so future sign-ins don't require a fresh email code every time.
+  window.Clerk.mountUserButton(clerkUserButton);
+}
+
 async function initAuth() {
   await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
   window.Clerk.addListener(({ user }) => {
     if (user) {
       setAuthenticated(true);
+      mountUserButtonOnce();
       loadStatus();
     } else {
       setAuthenticated(false);
@@ -206,6 +220,7 @@ async function initAuth() {
   });
   if (window.Clerk.user) {
     setAuthenticated(true);
+    mountUserButtonOnce();
     loadStatus();
   } else {
     mountSignIn();
@@ -344,9 +359,6 @@ document.getElementById("mobile-preview").addEventListener("click", () => {
   refreshPreview();
 });
 document.getElementById("close-preview").addEventListener("click", () => document.body.classList.remove("show-preview"));
-document.getElementById("logout-button").addEventListener("click", async () => {
-  await window.Clerk.signOut();
-});
 
 window.addEventListener("load", () => {
   initAuth();
