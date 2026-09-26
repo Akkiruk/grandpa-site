@@ -160,7 +160,7 @@ test("undo restores stacked drafts and then returns to the live site", async () 
   const call = async (path, method, body, cookie = "") => {
     const request = new Request(`https://example.com/api/editor/${path}`, {
       method,
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, origin: "https://example.com" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return handleApi(request, env, new URL(request.url));
@@ -181,10 +181,58 @@ test("undo restores stacked drafts and then returns to the live site", async () 
   assert.equal(await kv.get("draft:current", "json"), null);
 });
 
+test("blocks authenticated cross-site mutations", async () => {
+  const request = new Request("https://example.com/api/editor/publish", {
+    method: "POST",
+    headers: {
+      cookie: "site_editor_session=unused",
+      origin: "https://attacker.example",
+    },
+    body: "{}",
+  });
+  const response = await handleApi(request, {}, new URL(request.url));
+  assert.equal(response.status, 403);
+});
+
+test("rate limits repeated login failures and rejects tampered sessions", async () => {
+  const values = new Map();
+  const env = {
+    ADMIN_PASSWORD: "test-password",
+    SITE_CONTENT: {
+      async get(key) { return values.get(key) ?? null; },
+      async put(key, value) { values.set(key, value); },
+      async delete(key) { values.delete(key); },
+    },
+  };
+  const login = password => {
+    const request = new Request("https://example.com/api/editor/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://example.com", "cf-connecting-ip": "192.0.2.10" },
+      body: JSON.stringify({ password }),
+    });
+    return handleApi(request, env, new URL(request.url));
+  };
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    assert.equal((await login("wrong-password")).status, 401);
+  }
+  const limited = await login("test-password");
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "600");
+
+  values.clear();
+  const success = await login("test-password");
+  const cookie = success.headers.get("set-cookie").split(";", 1)[0];
+  const statusRequest = new Request("https://example.com/api/editor/status", {
+    headers: { cookie: `${cookie}tampered` },
+  });
+  assert.equal((await handleApi(statusRequest, env, new URL(statusRequest.url))).status, 401);
+});
+
 test("uses the configured OpenRouter coding model without exposing the key", async () => {
   let request;
   const result = await askOpenRouter(
-    { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "minimax/minimax-m2.5" },
+    { OPENROUTER_API_KEY: "test-key" },
     [{ role: "user", content: "Update services" }],
     async (url, options) => {
       request = { url, options };
@@ -199,5 +247,28 @@ test("uses the configured OpenRouter coding model without exposing the key", asy
   assert.equal(request.options.headers.authorization, "Bearer test-key");
   assert.equal(body.model, "minimax/minimax-m2.5");
   assert.equal(body.response_format.type, "json_object");
+  assert.equal(result.message, "Done");
+});
+
+test("retries malformed OpenRouter output with the chosen model", async () => {
+  const requests = [];
+  const result = await askOpenRouter(
+    { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "minimax/minimax-m2.5" },
+    [{ role: "user", content: "Update services" }],
+    async (url, options) => {
+      requests.push(JSON.parse(options.body));
+      const content = requests.length === 1
+        ? "I updated it."
+        : JSON.stringify({ message: "Done", operations: [{ path: "services.html", find: "old", replace: "new" }] });
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+  );
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].model, "minimax/minimax-m2.5");
+  assert.equal(requests[1].model, "minimax/minimax-m2.5");
+  assert.match(requests[1].messages.at(-1).content, /Return only the required JSON object/);
   assert.equal(result.message, "Done");
 });

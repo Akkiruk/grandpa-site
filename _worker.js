@@ -13,11 +13,41 @@ const MAX_MESSAGE_LENGTH = 4_000;
 const HISTORY_LIMIT = 20;
 const DRAFT_UNDO_LIMIT = 8;
 const SESSION_COOKIE = "site_editor_session";
+const DEFAULT_OPENROUTER_MODEL = "minimax/minimax-m2.5";
+const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 8;
+const LOGIN_FAILURE_TTL_SECONDS = 10 * 60;
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 };
+
+const PREVIEW_CSP = [
+  "default-src 'self' data: blob:",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "connect-src 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'self'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "sandbox allow-scripts",
+].join("; ");
+
+const PUBLIC_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+].join("; ");
 
 const SYSTEM_PROMPT = `You are the website engineer for Memories 2 DVD - USB, a local media-transfer business.
 The user is nontechnical and communicates only through chat. Make the requested change yourself.
@@ -162,8 +192,36 @@ async function sha256(value) {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function expectedSession(env) {
-  return sha256(`memories-editor:${env.ADMIN_PASSWORD || ""}`);
+function constantTimeEqual(left, right) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+async function sessionSignature(env, expiresAt) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(env.ADMIN_PASSWORD || ""),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`memories-editor:${expiresAt}`)
+  );
+  return Array.from(new Uint8Array(signature), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function createSession(env) {
+  const expiresAt = Date.now() + SESSION_DURATION_MS;
+  return `${expiresAt}.${await sessionSignature(env, expiresAt)}`;
 }
 
 async function isAuthenticated(request, env) {
@@ -171,8 +229,40 @@ async function isAuthenticated(request, env) {
     return false;
   }
   const supplied = parseCookies(request)[SESSION_COOKIE] || "";
-  const expected = await expectedSession(env);
-  return supplied.length === expected.length && supplied === expected;
+  const separator = supplied.indexOf(".");
+  if (separator === -1) {
+    return false;
+  }
+  const expiresAt = Number(supplied.slice(0, separator));
+  const signature = supplied.slice(separator + 1);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    return false;
+  }
+  return constantTimeEqual(signature, await sessionSignature(env, expiresAt));
+}
+
+async function loginFailureKey(request) {
+  const client = request.headers.get("cf-connecting-ip") || "unknown-client";
+  return `login-failures:${await sha256(client)}`;
+}
+
+function isTrustedMutation(request, url) {
+  if (request.method === "GET" || request.method === "HEAD") {
+    return true;
+  }
+  const origin = request.headers.get("origin");
+  if (origin) {
+    return origin === url.origin;
+  }
+  const referer = request.headers.get("referer");
+  if (!referer) {
+    return true;
+  }
+  try {
+    return new URL(referer).origin === url.origin;
+  } catch {
+    return false;
+  }
 }
 
 async function readAsset(env, requestUrl, path) {
@@ -272,27 +362,42 @@ async function askOpenAI(env, messages) {
 }
 
 export async function askOpenRouter(env, messages, fetchImpl = fetch) {
-  const response = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      "content-type": "application/json",
-      "http-referer": "https://memories2dvdorusb.com",
-      "x-title": "Memories 2 DVD - USB Website Editor",
-    },
-    body: JSON.stringify({
-      model: env.OPENROUTER_MODEL || "cohere/north-mini-code:free",
-      messages,
-      response_format: { type: "json_object" },
-      max_tokens: 4000,
-      temperature: 0.1,
-    }),
-  });
-  const result = await response.json();
-  if (!response.ok) {
-    throw new Error(result?.error?.message || "OpenRouter could not complete the edit.");
+  let retryResponse = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const requestMessages = retryResponse
+      ? [...messages, { role: "assistant", content: retryResponse }, {
+          role: "user",
+          content: "Return only the required JSON object with message and operations. Do not include prose or markdown.",
+        }]
+      : messages;
+    const response = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "content-type": "application/json",
+        "http-referer": "https://memories2dvdorusb.com",
+        "x-title": "Memories 2 DVD - USB Website Editor",
+      },
+      body: JSON.stringify({
+        model: env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+        messages: requestMessages,
+        response_format: { type: "json_object" },
+        max_tokens: 4000,
+        temperature: 0.1,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result?.error?.message || "OpenRouter could not complete the edit.");
+    }
+    const content = result.choices?.[0]?.message?.content || "";
+    try {
+      return extractJson(content);
+    } catch {
+      retryResponse = typeof content === "string" ? content : JSON.stringify(content);
+    }
   }
-  return extractJson(result.choices?.[0]?.message?.content || "");
+  throw new Error("OpenRouter returned an invalid edit. Please try the request again.");
 }
 
 export async function askWorkersAI(env, messages) {
@@ -324,7 +429,7 @@ export async function askWorkersAI(env, messages) {
       }
       const response = result.response || result.result?.response || "";
       try {
-        return extractJson(response);
+        return { ...extractJson(response), _model: model };
       } catch (error) {
         retryMessage = typeof response === "string" ? response : JSON.stringify(response);
       }
@@ -351,7 +456,19 @@ async function requestEdits(env, message, files, conversation) {
   ];
 
   if (env.OPENROUTER_API_KEY) {
-    return askOpenRouter(env, messages);
+    try {
+      return {
+        ...(await askOpenRouter(env, messages)),
+        _provider: "OpenRouter",
+        _model: env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+      };
+    } catch (error) {
+      if (!env.AI) {
+        throw error;
+      }
+      const fallback = await askWorkersAI(env, messages);
+      return { ...fallback, _provider: "Cloudflare AI", _fallback: true };
+    }
   }
   if (env.OPENAI_API_KEY) {
     return askOpenAI(env, messages);
@@ -393,14 +510,25 @@ async function publishFiles(env, files) {
 }
 
 export async function handleApi(request, env, url) {
+  if (!isTrustedMutation(request, url)) {
+    return json({ error: "That request was blocked for safety." }, 403);
+  }
+
   if (url.pathname === "/api/editor/login" && request.method === "POST") {
+    const failureKey = await loginFailureKey(request);
+    const failures = Number(await env.SITE_CONTENT.get(failureKey)) || 0;
+    if (failures >= LOGIN_FAILURE_LIMIT) {
+      return json({ error: "Too many sign-in attempts. Please wait ten minutes." }, 429, { "retry-after": "600" });
+    }
     const body = await request.json().catch(() => ({}));
     const suppliedHash = await sha256(String(body.password || ""));
     const expectedHash = await sha256(env.ADMIN_PASSWORD || "missing-secret");
-    if (!env.ADMIN_PASSWORD || suppliedHash !== expectedHash) {
+    if (!env.ADMIN_PASSWORD || !constantTimeEqual(suppliedHash, expectedHash)) {
+      await env.SITE_CONTENT.put(failureKey, String(failures + 1), { expirationTtl: LOGIN_FAILURE_TTL_SECONDS });
       return json({ error: "That password did not work." }, 401);
     }
-    const session = await expectedSession(env);
+    await env.SITE_CONTENT.delete(failureKey);
+    const session = await createSession(env);
     return json(
       { ok: true },
       200,
@@ -429,6 +557,11 @@ export async function handleApi(request, env, url) {
       history: history || [],
       conversation,
       aiProvider: env.OPENROUTER_API_KEY ? "OpenRouter" : env.OPENAI_API_KEY ? "OpenAI" : "Cloudflare AI",
+      aiModel: env.OPENROUTER_API_KEY
+        ? env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL
+        : env.OPENAI_API_KEY
+          ? env.OPENAI_MODEL || "gpt-4.1-mini"
+          : env.AI_MODEL || "Automatic fallback",
     });
   }
 
@@ -446,6 +579,9 @@ export async function handleApi(request, env, url) {
       const result = await requestEdits(env, message, draft.files, conversation);
       const files = applyOperations(draft.files, result.operations);
       const receipt = describeOperations(draft.files, files, result.operations);
+      receipt.aiProvider = result._provider;
+      receipt.aiModel = result._model;
+      receipt.usedFallback = Boolean(result._fallback);
       const checkpointId = await saveDraftCheckpoint(env, draft, Boolean(storedDraft));
       const allUndoIds = [...(draft.undoIds || []), checkpointId];
       const undoIds = allUndoIds.slice(-DRAFT_UNDO_LIMIT);
@@ -565,7 +701,15 @@ async function servePreview(request, env, url) {
       : path.endsWith(".css")
         ? "text/css; charset=utf-8"
         : "application/javascript; charset=utf-8";
-    return new Response(draft.files[path], { headers: { "content-type": contentType, "cache-control": "no-store" } });
+    return new Response(draft.files[path], {
+      headers: {
+        "content-type": contentType,
+        "cache-control": "no-store",
+        "content-security-policy": PREVIEW_CSP,
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+      },
+    });
   }
   const assetUrl = new URL(request.url);
   assetUrl.pathname = `/${path}`;
@@ -592,7 +736,17 @@ async function servePublished(request, env, url) {
     : path.endsWith(".css")
       ? "text/css; charset=utf-8"
       : "application/javascript; charset=utf-8";
-  return new Response(content, { headers: { "content-type": contentType, "cache-control": "public, max-age=60" } });
+  return new Response(content, {
+    headers: {
+      "content-type": contentType,
+      "cache-control": "public, max-age=60",
+      "content-security-policy": PUBLIC_CSP,
+      "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    },
+  });
 }
 
 export default {

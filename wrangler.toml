@@ -4,7 +4,7 @@ compatibility_date = "2026-05-02"
 send_metrics = false
 
 [vars]
-OPENROUTER_MODEL = "cohere/north-mini-code:free"
+OPENROUTER_MODEL = "minimax/minimax-m2.5"
 
 [ai]
 binding = "AI"

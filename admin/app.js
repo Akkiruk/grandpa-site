@@ -167,7 +167,7 @@ async function loadStatus() {
   try {
     const data = await api("status", { method: "GET" });
     state = { ...state, ...data };
-    providerLabel.textContent = data.aiProvider;
+    providerLabel.textContent = data.aiModel ? `${data.aiProvider} · ${data.aiModel}` : data.aiProvider;
     setAuthenticated(true);
     renderConversation();
     renderDraftState();
@@ -220,6 +220,11 @@ chatForm.addEventListener("submit", async event => {
     const data = await api("chat", { method: "POST", body: JSON.stringify({ message }) });
     typing.remove();
     addMessage("assistant", data.message, { receipt: data.receipt, canUndo: true });
+    if (data.receipt.aiProvider) {
+      providerLabel.textContent = data.receipt.usedFallback
+        ? `Backup used · ${data.receipt.aiProvider} · ${data.receipt.aiModel}`
+        : `${data.receipt.aiProvider} · ${data.receipt.aiModel}`;
+    }
     state.draft = data.draft;
     state.conversation.push(
       { role: "user", text: message },
