@@ -71,6 +71,15 @@ Published AI changes are stored in Cloudflare KV and served ahead of deployed st
 4. `_worker.js`'s `isAuthenticated()` calls `clerkClient.authenticateRequest(request, { authorizedParties: AUTHORIZED_PARTIES })` and checks `toAuth().userId`. `AUTHORIZED_PARTIES` in `_worker.js` lists the exact origins allowed to present a valid token (currently the production domain and the `*.pages.dev` project domain) — this is Clerk's CSRF protection; update it if the site's origin(s) ever change.
 5. For tests, `_worker.js` exports `__setClerkClientFactory()` as a dependency-injection seam so tests can substitute a fake Clerk client instead of making real network/JWKS calls. Production code never calls it.
 
+### Photo uploads
+
+Users can attach a photo to a chat message; the AI sees it (multimodal vision) and can embed it in generated HTML.
+
+- Client (`admin/app.js`): resizes/compresses client-side via `<canvas>` (capped at 1600px, JPEG q=0.82) before upload, so a full camera photo doesn't bloat page load — `resizeImageForUpload()`, `uploadPhoto()`.
+- `POST /api/editor/upload` (authenticated, multipart `FormData` with a `photo` field): sniffs actual file bytes for a real image signature (`detectImageType()` in `_worker.js` — never trusts the client-declared MIME type), stores under `upload:<uuid>.<ext>` in the `SITE_CONTENT` KV namespace with `contentType` in KV metadata, maintains a capped `uploads:index` list, returns `{ url: "/uploads/<uuid>.<ext>" }`.
+- `GET /uploads/<filename>` (`serveUpload()`, routed directly in the top-level `fetch()`, **not** behind `handleApi`'s auth gate): deliberately unauthenticated, because the OpenRouter provider fetches this URL server-side to see the image — filenames are unguessable UUIDs, so this is the same trust model as most user-upload hosting.
+- The chat endpoint only accepts an `imageUrl` matching `^/uploads/[a-z0-9-]+\.(jpg|png|webp|gif)$` — never an arbitrary attacker-supplied URL for the AI provider to fetch. See `requestEdits()`'s multimodal message construction (`content: [{type:"text",...},{type:"image_url",...}]`) when an image is present.
+
 ### Cloudflare bindings
 
 Configured in `wrangler.toml`:
