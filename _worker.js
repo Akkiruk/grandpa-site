@@ -221,6 +221,23 @@ export function validateFiles(files) {
         throw new Error(`${path} attempted to add a remote script.`);
       }
     }
+    if (path.endsWith(".css")) {
+      // Not a real CSS parser, but a mismatched brace or unclosed comment is
+      // the single most common and most damaging way an AI edit silently
+      // breaks the entire stylesheet (the browser drops everything after
+      // the error), and both are cheap to catch here before they ever reach
+      // a draft.
+      const openBraces = (content.match(/\{/g) || []).length;
+      const closeBraces = (content.match(/\}/g) || []).length;
+      if (openBraces !== closeBraces) {
+        throw new Error(`${path} has a syntax error (${openBraces} "{" vs ${closeBraces} "}") that would break the site's styling. Please ask again.`);
+      }
+      const commentStarts = (content.match(/\/\*/g) || []).length;
+      const commentEnds = (content.match(/\*\//g) || []).length;
+      if (commentStarts !== commentEnds) {
+        throw new Error(`${path} has an unclosed comment that would break the site's styling. Please ask again.`);
+      }
+    }
   }
 }
 

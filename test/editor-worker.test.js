@@ -248,6 +248,14 @@ test("rejects unsafe or structurally broken output", () => {
     () => validateFiles({ ...files, "index.html": "<html><body>Missing title</body></html>" }),
     /required page structure/
   );
+  assert.throws(
+    () => validateFiles({ ...files, "styles.css": "body { color: black; } .nav { display: flex;" }),
+    /syntax error/
+  );
+  assert.throws(
+    () => validateFiles({ ...files, "styles.css": "body { color: black; } /* oops, never closed" }),
+    /unclosed comment/
+  );
 });
 
 test("describes accepted changes for the editor receipt", () => {
