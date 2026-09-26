@@ -182,48 +182,37 @@ async function loadStatus() {
   } catch (error) {
     if (error.status === 401) {
       setAuthenticated(false);
-      mountSignIn();
       return;
     }
     loginError.textContent = error.message;
   }
 }
 
-function mountSignIn() {
-  clerkSignIn.innerHTML = "";
+// Clerk's SignIn and UserButton components are mounted exactly once, in
+// initAuth(), and never re-mounted. They manage their own internal state
+// (e.g. the email -> code multi-step flow) reactively; re-mounting mid-flow
+// (as this code used to do on every auth state change) wipes that in-progress
+// state and strands the user on a blank step.
+async function initAuth() {
+  await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
   window.Clerk.mountSignIn(clerkSignIn);
-}
-
-let userButtonMounted = false;
-function mountUserButtonOnce() {
-  if (userButtonMounted) {
-    return;
-  }
-  userButtonMounted = true;
   // "Manage account" here is where a user can add a password to an account
   // that was originally created without one (e.g. via a since-disabled OAuth
   // sign-in), so future sign-ins don't require a fresh email code every time.
   window.Clerk.mountUserButton(clerkUserButton);
-}
-
-async function initAuth() {
-  await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
   window.Clerk.addListener(({ user }) => {
     if (user) {
       setAuthenticated(true);
-      mountUserButtonOnce();
       loadStatus();
     } else {
       setAuthenticated(false);
-      mountSignIn();
     }
   });
   if (window.Clerk.user) {
     setAuthenticated(true);
-    mountUserButtonOnce();
     loadStatus();
   } else {
-    mountSignIn();
+    setAuthenticated(false);
   }
 }
 
