@@ -35,9 +35,10 @@ Two ways to inspect or change the live Clerk instance from a terminal, both usin
 
 Production AI provider:
 
-- Provider: OpenRouter, model `openai/gpt-4o-mini` (as of 2026-09-26)
+- Provider: OpenRouter, model `openai/gpt-5.1` (as of 2026-09-26; user has budget for a paid model, chose this over Claude Sonnet 5 and Gemini 3.1 Pro after live-testing all three — equally accurate once the CRLF bug below was accounted for, but 3-5x faster (~3.7s vs 13.5-20.8s) and cheapest of the three, at roughly $0.01-0.02/edit)
 - **No fallback provider of any kind.** There was previously a Cloudflare Workers AI fallback on OpenRouter failure; it was removed deliberately (explicit user instruction: "either OpenRouter works or it doesn't"). It was also actively harmful: it masked real OpenRouter failures behind Workers AI's own unrelated "free daily allowance used" error, making the actual problem impossible to diagnose from the error message alone.
-- **Why the model changed from `minimax/minimax-m2.5`**: diagnosed live (direct curl tests against OpenRouter, not guessed) that this model mandates internal chain-of-thought reasoning it cannot disable (`reasoning: {enabled: false}` returns a 400: "Reasoning is mandatory for this endpoint"), and for some ordinary requests (e.g. "make the header icons more mobile friendly") it spiraled into 16,000+ reasoning tokens and hit `finish_reason: "length"` with `content: null` — a complete non-answer, not just a slow one, costing real money for nothing. `openai/gpt-4o-mini` was tested the same way and reliably returns valid, well-formed JSON in ~2 seconds. If this model is ever swapped again, verify the replacement the same way: a real curl request against `https://openrouter.ai/api/v1/chat/completions` with an actual file + edit request, checking `finish_reason` and that `content` is non-null valid JSON — don't just trust a model's marketing.
+- **Why the model was first changed from `minimax/minimax-m2.5`**: diagnosed live (direct curl tests against OpenRouter, not guessed) that this model mandates internal chain-of-thought reasoning it cannot disable (`reasoning: {enabled: false}` returns a 400: "Reasoning is mandatory for this endpoint"), and for some ordinary requests it spiraled into 16,000+ reasoning tokens and hit `finish_reason: "length"` with `content: null` — a complete non-answer, costing real money for nothing. If a model is ever swapped, verify it the same way: a real curl request against `https://openrouter.ai/api/v1/chat/completions` with an actual file + edit request, checking `finish_reason` and that `content` is non-null valid JSON — don't just trust a model's marketing.
+- **The bigger discovery: CRLF vs LF line endings was the dominant cause of "the requested edit no longer matches" failures, unrelated to model choice.** Every site source file was being checked out locally with Windows CRLF endings (git's stored blobs were actually LF; local `core.autocrlf` silently converted them on checkout, and every deploy ships from that local build output). Every LLM always writes plain LF in JSON responses. A CRLF file made every multi-line find/replace fail to match, on any model, always. Fixed at two layers: `applyOperations()` in `_worker.js` now normalizes a file's stored content and the AI's find/replace/content strings to LF before comparing (self-heals any file the first time it's edited, regardless of where its content came from), and `.gitattributes` forces LF checkout for all tracked files so this can't silently reappear on a fresh clone or another machine. If exact-match edit failures ever come back, check `finish_reason`/`content` on a real API call (model problem) before assuming it's this — but also don't rule this class of bug out again without checking for `\r\n` in the actual stored file content first.
 
 ## Architecture
 
@@ -75,7 +76,7 @@ Published AI changes are stored in Cloudflare KV and served ahead of deployed st
 Configured in `wrangler.toml`:
 
 - `SITE_CONTENT`: KV namespace
-- `OPENROUTER_MODEL = "openai/gpt-4o-mini"`
+- `OPENROUTER_MODEL = "openai/gpt-5.1"`
 - `CLERK_PUBLISHABLE_KEY` (plain var, not secret — this key is public by design)
 
 There is deliberately no `[ai]` binding anymore (Workers AI fallback removed, see above).
