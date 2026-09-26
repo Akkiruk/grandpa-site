@@ -54,13 +54,30 @@ test("matches and edits a file that still has CRLF line endings", () => {
   assert.doesNotMatch(result["index.html"], /\r\n/);
 });
 
-test("inlines preview CSS and JS instead of leaving them as separate requests", () => {
+test("inlines preview CSS and JS instead of leaving them as separate requests", async () => {
   const html = '<html><head><link rel="stylesheet" href="styles.css" /></head><body><script src="script.js"></script></body></html>';
-  const result = inlinePreviewAssets(html, { "styles.css": "body{color:red}", "script.js": "console.log(1)" });
+  const result = await inlinePreviewAssets(html, { "styles.css": "body{color:red}", "script.js": "console.log(1)" });
   assert.equal(
     result,
     '<html><head><style>body{color:red}</style></head><body><script>console.log(1)</script></body></html>'
   );
+});
+
+test("inlines an uploaded photo as a data URI instead of a same-origin request", async () => {
+  const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const env = {
+    SITE_CONTENT: {
+      async getWithMetadata(key, type) {
+        assert.equal(key, "upload:abc123.png");
+        assert.equal(type, "arrayBuffer");
+        return { value: bytes, metadata: { contentType: "image/png" } };
+      },
+    },
+  };
+  const html = '<img src="/uploads/abc123.png" alt="A photo">';
+  const result = await inlinePreviewAssets(html, {}, env);
+  assert.doesNotMatch(result, /\/uploads\//);
+  assert.match(result, /^<img src="data:image\/png;base64,/);
 });
 
 test("preview serves HTML with styles.css and script.js inlined, not linked", async () => {
