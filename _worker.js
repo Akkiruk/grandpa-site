@@ -764,13 +764,28 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+async function fetchDeployedAssetBytes(env, requestUrl, path) {
+  const assetUrl = new URL(requestUrl);
+  assetUrl.pathname = `/${path}`;
+  assetUrl.search = "";
+  const response = await env.ASSETS.fetch(new Request(assetUrl));
+  if (!response.ok) {
+    return null;
+  }
+  return { bytes: await response.arrayBuffer(), contentType: response.headers.get("content-type") || "image/png" };
+}
+
 // See the comment on PREVIEW_CSP: replaces <link href="styles.css">,
-// <script src="script.js">, and <img src="/uploads/..."> with their actual
-// content inlined (text for CSS/JS, a base64 data: URI for images), so the
-// preview iframe never needs a second authenticated/same-origin sub-resource
-// request - CSP 'self' doesn't reliably match those from a sandboxed
-// iframe's opaque origin, so they'd otherwise silently fail to load.
-export async function inlinePreviewAssets(html, files, env) {
+// <script src="script.js">, and every local <img src="..."> with their
+// actual content inlined (text for CSS/JS, a base64 data: URI for images),
+// so the preview iframe never needs a second authenticated/same-origin
+// sub-resource request - CSP 'self' doesn't reliably match those from a
+// sandboxed iframe's opaque origin, so they'd otherwise silently fail to
+// load. This covers both AI-uploaded photos (/uploads/<file>, from KV) and
+// the site's own pre-existing local images (e.g. assets/photo.png, from the
+// deployed static assets) - anything not already an http(s):// or data:
+// URL.
+export async function inlinePreviewAssets(html, files, env, requestUrl) {
   let result = html;
   if (typeof files["styles.css"] === "string") {
     result = result.replace(
@@ -784,18 +799,30 @@ export async function inlinePreviewAssets(html, files, env) {
       `<script>${files["script.js"]}</script>`
     );
   }
-  const uploadRefs = [...result.matchAll(/\/uploads\/([a-z0-9-]+\.(?:jpg|png|webp|gif))/gi)];
+  const imgSrcs = [...result.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["']/gi)].map(m => m[1]);
   const seen = new Set();
-  for (const [uploadPath, filename] of uploadRefs) {
-    if (seen.has(uploadPath) || !env) {
+  for (const src of imgSrcs) {
+    if (seen.has(src) || /^(https?:)?\/\//i.test(src) || src.startsWith("data:") || !env) {
       continue;
     }
-    seen.add(uploadPath);
-    const stored = await env.SITE_CONTENT.getWithMetadata(`upload:${filename}`, "arrayBuffer");
-    if (stored?.value) {
-      const contentType = stored.metadata?.contentType || "image/jpeg";
-      const dataUri = `data:${contentType};base64,${arrayBufferToBase64(stored.value)}`;
-      result = result.split(uploadPath).join(dataUri);
+    seen.add(src);
+    let bytes;
+    let contentType;
+    if (src.startsWith("/uploads/")) {
+      const stored = await env.SITE_CONTENT.getWithMetadata(`upload:${src.slice("/uploads/".length)}`, "arrayBuffer");
+      if (stored?.value) {
+        bytes = stored.value;
+        contentType = stored.metadata?.contentType || "image/jpeg";
+      }
+    } else if (requestUrl) {
+      const fetched = await fetchDeployedAssetBytes(env, requestUrl, src.replace(/^\//, ""));
+      if (fetched) {
+        bytes = fetched.bytes;
+        contentType = fetched.contentType;
+      }
+    }
+    if (bytes) {
+      result = result.split(src).join(`data:${contentType};base64,${arrayBufferToBase64(bytes)}`);
     }
   }
   return result;
@@ -814,7 +841,7 @@ async function servePreview(request, env, url) {
       : path.endsWith(".css")
         ? "text/css; charset=utf-8"
         : "application/javascript; charset=utf-8";
-    const body = path.endsWith(".html") ? await inlinePreviewAssets(draft.files[path], draft.files, env) : draft.files[path];
+    const body = path.endsWith(".html") ? await inlinePreviewAssets(draft.files[path], draft.files, env, request.url) : draft.files[path];
     return new Response(body, {
       headers: {
         "content-type": contentType,

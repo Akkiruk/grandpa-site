@@ -80,6 +80,27 @@ test("inlines an uploaded photo as a data URI instead of a same-origin request",
   assert.match(result, /^<img src="data:image\/png;base64,/);
 });
 
+test("inlines a pre-existing local image (assets/...) from deployed assets, not just uploads", async () => {
+  // This is the actual real-world bug: the site's own images were added
+  // directly to the repo before the AI editor existed, referenced with a
+  // relative path like src="assets/generated/home-hero.png" - never
+  // touching /uploads/ at all. These hit the exact same sandboxed-iframe
+  // CSP problem as uploaded photos and styles.css did.
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3]);
+  const env = {
+    ASSETS: {
+      async fetch(request) {
+        assert.equal(new URL(request.url).pathname, "/assets/generated/home-hero.png");
+        return new Response(bytes, { headers: { "content-type": "image/jpeg" } });
+      },
+    },
+  };
+  const html = '<img src="assets/generated/home-hero.png" alt="Hero">';
+  const result = await inlinePreviewAssets(html, {}, env, "https://example.com/preview/index.html");
+  assert.doesNotMatch(result, /assets\/generated/);
+  assert.match(result, /^<img src="data:image\/jpeg;base64,/);
+});
+
 test("preview serves HTML with styles.css and script.js inlined, not linked", async () => {
   const env = {
     ...signedInEnv(),
