@@ -276,10 +276,20 @@ h1 {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
+  /* Without this, the row defaults to "auto" - sized to fit its tallest
+     child's full content height. Since chat-pane's content (the message
+     history) grows without bound, that stretched editor-main taller than
+     the actual space available every time the conversation got long
+     enough, pushing the composer off the bottom of the screen. Capping
+     the row at minmax(0, 1fr) forces it to stay within the space this
+     flex item actually has and makes the overflow scroll internally
+     instead. */
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .chat-pane {
   min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   background: var(--surface);
