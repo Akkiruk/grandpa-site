@@ -33,11 +33,11 @@ Two ways to inspect or change the live Clerk instance from a terminal, both usin
 1. **Clerk CLI** (`npm install -g clerk`, real official package despite the generic name). Run non-interactively by exporting the key: `CLERK_SECRET_KEY=<key> clerk users list`, `clerk doctor`, `clerk config pull`, etc. `clerk auth login` (full account claim, needed for `config schema`/`config patch`/`deploy`) requires an interactive browser OAuth flow — an agent cannot complete this without the user.
 2. **Raw API calls**: `GET https://polite-mammoth-8157.clerk.accounts.dev/v1/environment` (public Frontend API, no auth needed) returns `user_settings.sign_up.mode` and `user_settings.social.oauth_google.enabled` — the two settings that mattered here. `GET/PATCH https://api.clerk.com/v1/instance` and `/v1/instance/restrictions` (Bearer `CLERK_SECRET_KEY`) cover a different, narrower set of instance settings (allowlist/blocklist, session syncing, etc.) — **neither the Backend API nor the CLI's `config` command exposes a field to toggle sign-up mode or individual social connections programmatically; these are dashboard-only** (Configure → Restrictions → Sign-up mode; Configure → SSO Connections). Confirmed by directly probing the endpoints, not just reading docs.
 
-Production AI provider (unchanged by this migration):
+Production AI provider:
 
-- Provider: OpenRouter
-- Primary model: `minimax/minimax-m2.5`
-- Cloudflare Workers AI is an explicitly labeled fallback
+- Provider: OpenRouter, model `openai/gpt-4o-mini` (as of 2026-09-26)
+- **No fallback provider of any kind.** There was previously a Cloudflare Workers AI fallback on OpenRouter failure; it was removed deliberately (explicit user instruction: "either OpenRouter works or it doesn't"). It was also actively harmful: it masked real OpenRouter failures behind Workers AI's own unrelated "free daily allowance used" error, making the actual problem impossible to diagnose from the error message alone.
+- **Why the model changed from `minimax/minimax-m2.5`**: diagnosed live (direct curl tests against OpenRouter, not guessed) that this model mandates internal chain-of-thought reasoning it cannot disable (`reasoning: {enabled: false}` returns a 400: "Reasoning is mandatory for this endpoint"), and for some ordinary requests (e.g. "make the header icons more mobile friendly") it spiraled into 16,000+ reasoning tokens and hit `finish_reason: "length"` with `content: null` — a complete non-answer, not just a slow one, costing real money for nothing. `openai/gpt-4o-mini` was tested the same way and reliably returns valid, well-formed JSON in ~2 seconds. If this model is ever swapped again, verify the replacement the same way: a real curl request against `https://openrouter.ai/api/v1/chat/completions` with an actual file + edit request, checking `finish_reason` and that `content` is non-null valid JSON — don't just trust a model's marketing.
 
 ## Architecture
 
@@ -74,10 +74,11 @@ Published AI changes are stored in Cloudflare KV and served ahead of deployed st
 
 Configured in `wrangler.toml`:
 
-- `AI`: Workers AI fallback
 - `SITE_CONTENT`: KV namespace
-- `OPENROUTER_MODEL = "minimax/minimax-m2.5"`
+- `OPENROUTER_MODEL = "openai/gpt-4o-mini"`
 - `CLERK_PUBLISHABLE_KEY` (plain var, not secret — this key is public by design)
+
+There is deliberately no `[ai]` binding anymore (Workers AI fallback removed, see above).
 
 Encrypted production secrets:
 
@@ -113,8 +114,7 @@ Cloudflare's optional analytics beacon is intentionally blocked by CSP and may c
 
 - OpenRouter JSON mode and one malformed-output retry
 - Explicit model reporting in editor status/UI and edit receipts
-- Labeled Cloudflare AI fallback instead of silent model substitution
-- Workers AI model fallback and quota-friendly errors
+- Server-side error logging (`console.error`, viewable live via `npx wrangler pages deployment tail <deployment-id> --project-name memories-2-dvd-usb`, needs the specific deployment ID from `wrangler pages deployment list` — `--environment production` alone fails in non-interactive mode on this wrangler version) for chat failures and any unhandled error
 - Exact guarded find/replace operations
 - No-op and ambiguous-edit rejection
 - File validation before draft/publish
@@ -166,7 +166,6 @@ In `_worker.js`:
 - `applyOperations`
 - `extractJson`
 - `askOpenRouter`
-- `askWorkersAI`
 - `requestEdits`
 - `isTrustedMutation`
 - `isAuthenticated` (Clerk-based)
@@ -202,8 +201,10 @@ In `admin/app.js`:
 
 ## Open Follow-Ups
 
-1. **User should verify the real sign-in flow in a browser** with email code (mount of Clerk's `SignIn` UI, code round-trip, editor unlocking after sign-in, sign-out via the header button). Confirmed via API that the config is correct (restricted mode, Google off); not yet click-tested end to end by a human since that change.
+1. **Confirmed working end to end by the user**: email code sign-in, chat, undo, and the editor UI all function correctly in production as of 2026-09-26.
 2. If a browser console shows CSP violations on `/admin/`, the CSP in `_headers` may need additional Clerk domains — check the blocked resource in the console error and add its origin to the relevant directive.
 3. No role/permission distinction exists yet between the primary admin and invited users (e.g. grandpa) — anyone with a valid Clerk account for this app can fully use the editor. Add Clerk Organizations/roles if that ever needs to change.
 4. Grandpa has not been invited yet — that's a Clerk Dashboard action (Users → Invitations) or `clerk` CLI once his email address is known. No code involved.
 5. Do not re-enable Google (or any OAuth) sign-in on this dev instance without promoting to a production Clerk instance with a verified custom domain first — see "Why Google OAuth is off" above. This is not a temporary workaround to casually revert; it's a real architectural constraint of dev-instance-on-a-real-domain.
+6. **Never mount a Clerk component (`mountSignIn`, etc.) unconditionally on every page load/auth-state event.** Two separate production incidents (an infinite reload loop, and a background-token-refresh wiping in-flight chat messages) both traced back to code reacting to *every* Clerk `addListener` firing — which happens repeatedly in the background (session refresh), not just on real sign-in/out transitions. Always gate on an actual state transition (track "was this already true" and compare), never on the listener firing at all. See the comments in `admin/app.js`'s `initAuth()`/`mountSignInIfNeeded()`/`loadStatus()` for the specifics of both fixes.
+7. If the AI editor starts failing edits again, don't assume it's a system bug before checking `finish_reason` and `content` on a direct OpenRouter test call (see the AI provider section above) — a model silently failing to produce output looks identical, from the chat UI's perspective, to almost any other failure.
