@@ -1,0 +1,6 @@
+# Force LF line endings for all site source files, regardless of platform
+# or editor settings. This matters beyond style: the AI editor's find/replace
+# guard does exact string matching, and every LLM writes plain LF in its
+# output - a CRLF file makes every multi-line edit fail to match, silently,
+# no matter which model is used. See _worker.js's normalizeLineEndings().
+* text=auto eol=lf

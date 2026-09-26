@@ -4,7 +4,7 @@ compatibility_date = "2026-05-02"
 send_metrics = false
 
 [vars]
-OPENROUTER_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_MODEL = "openai/gpt-5.1"
 CLERK_PUBLISHABLE_KEY = "pk_test_cG9saXRlLW1hbW1vdGgtODE1Ny5jbGVyay5hY2NvdW50cy5kZXYk"
 
 [[kv_namespaces]]

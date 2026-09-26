@@ -37,6 +37,21 @@ test.afterEach(() => {
   mock.restoreAll();
 });
 
+test("matches and edits a file that still has CRLF line endings", () => {
+  // Real-world scenario that caused every multi-line edit to fail: a file
+  // stored with Windows CRLF endings, and an AI response (always plain LF,
+  // regardless of model) trying to find/replace multi-line text in it.
+  const crlfFiles = {
+    ...files,
+    "index.html": "<!doctype html><html>\r\n<head><title>Home</title></head>\r\n<body>\r\n<h1>Hello</h1>\r\n</body>\r\n</html>",
+  };
+  const result = applyOperations(crlfFiles, [
+    { path: "index.html", find: "<body>\n<h1>Hello</h1>\n</body>", replace: "<body>\n<h1>Welcome</h1>\n</body>" },
+  ]);
+  assert.match(result["index.html"], /Welcome/);
+  assert.doesNotMatch(result["index.html"], /\r\n/);
+});
+
 test("applies an exact guarded edit", () => {
   const result = applyOperations(files, [
     { path: "index.html", find: "<h1>Hello</h1>", replace: "<h1>Welcome</h1>" },
@@ -289,7 +304,7 @@ test("uses the configured OpenRouter coding model without exposing the key", asy
   const body = JSON.parse(request.options.body);
   assert.equal(request.url, "https://openrouter.ai/api/v1/chat/completions");
   assert.equal(request.options.headers.authorization, "Bearer test-key");
-  assert.equal(body.model, "openai/gpt-4o-mini");
+  assert.equal(body.model, "openai/gpt-5.1");
   assert.equal(body.response_format.type, "json_object");
   assert.equal(result.message, "Done");
 });
