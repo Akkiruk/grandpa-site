@@ -62,7 +62,7 @@ Encrypted production secrets:
 - `ADMIN_PASSWORD`
 - `OPENROUTER_API_KEY`
 
-Local `.env` is ignored and currently contains non-empty values for `ADMIN_PASSWORD`, `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL`. Never display those values. `.env.example` was deleted by the user or another process after this handoff was first written; that deletion is an unrelated uncommitted change and must not be reverted without instruction.
+Local `.env` is ignored and currently contains non-empty values for `ADMIN_PASSWORD`, `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL`. Never display those values. `.env.example` was intentionally removed permanently; do not recreate it.
 
 ## Security Already Implemented
 
@@ -198,7 +198,7 @@ In `_worker.js`:
 - After local validation, deploy, commit, and push by default.
 - Do not wait for GitHub Actions after pushing unless explicitly requested.
 - Never remove token permissions; only add permissions.
-- Preserve unrelated user changes, especially ignored `.env` and the current uncommitted deletion of `.env.example`.
+- Preserve ignored `.env`. Do not recreate `.env.example`; the user intentionally removed it permanently.
 
 ## Tool/Workflow Notes
 
