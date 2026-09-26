@@ -11,3 +11,9 @@
   Cache-Control: no-store
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
+
+/failed/*
+  X-Robots-Tag: noindex, nofollow
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY

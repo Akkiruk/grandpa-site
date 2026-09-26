@@ -188,23 +188,26 @@ async function loadStatus() {
   }
 }
 
-// Clerk's SignIn and UserButton components are mounted exactly once, in
-// initAuth(), and never re-mounted. They manage their own internal state
-// (e.g. the email -> code multi-step flow) reactively; re-mounting mid-flow
-// (as this code used to do on every auth state change) wipes that in-progress
-// state and strands the user on a blank step.
+// Clerk's SignIn component is mounted at most once, and ONLY when there is
+// no active session - never unconditionally on every page load. The
+// infinite reload loop we hit twice was caused by mounting SignIn (with a
+// forced post-sign-in redirect) even for an already-authenticated visitor:
+// on mount, it would notice the existing session, immediately fire its
+// "redirect now" behavior to the same page, causing a full reload, which
+// mounted SignIn again, which redirected again - forever. Only mounting it
+// for a genuinely signed-out visitor removes the condition that triggers
+// that loop, so it's safe to tell Clerk exactly where to land afterward.
+let signInMounted = false;
+function mountSignInIfNeeded() {
+  if (signInMounted) {
+    return;
+  }
+  signInMounted = true;
+  window.Clerk.mountSignIn(clerkSignIn, { forceRedirectUrl: "/admin/" });
+}
+
 async function initAuth() {
   await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
-  // Deliberately no forceRedirectUrl here. Overriding Clerk's redirect
-  // target client-side has caused infinite reload loops twice on this dev
-  // instance (its session-sync handshake seems to fight any client-side
-  // override of where it lands). Instead, the correct destination is set in
-  // the Clerk Dashboard itself (Configure -> Paths -> Home URL /
-  // after-sign-in URL -> /admin/), which lets Clerk redirect to the right
-  // place as its own native default instead of us overriding it after the
-  // fact. Do not re-add a client-side redirect override without confirming
-  // the Dashboard Paths config first.
-  window.Clerk.mountSignIn(clerkSignIn);
   // "Manage account" here is where a user can add a password to an account
   // that was originally created without one (e.g. via a since-disabled OAuth
   // sign-in), so future sign-ins don't require a fresh email code every time.
@@ -215,6 +218,7 @@ async function initAuth() {
       loadStatus();
     } else {
       setAuthenticated(false);
+      mountSignInIfNeeded();
     }
   });
   if (window.Clerk.user) {
@@ -222,6 +226,7 @@ async function initAuth() {
     loadStatus();
   } else {
     setAuthenticated(false);
+    mountSignInIfNeeded();
   }
 }
 

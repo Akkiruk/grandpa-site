@@ -35,5 +35,6 @@ foreach ($file in $rootFiles) {
 
 Copy-Item -LiteralPath (Join-Path $root "assets") -Destination (Join-Path $resolvedOutputDir "assets") -Recurse
 Copy-Item -LiteralPath (Join-Path $root "admin") -Destination (Join-Path $resolvedOutputDir "admin") -Recurse
+Copy-Item -LiteralPath (Join-Path $root "failed") -Destination (Join-Path $resolvedOutputDir "failed") -Recurse
 
 Write-Host "Staged Cloudflare Pages assets to $resolvedOutputDir" -ForegroundColor Green
