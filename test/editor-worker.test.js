@@ -57,10 +57,15 @@ test("matches and edits a file that still has CRLF line endings", () => {
 test("inlines preview CSS and JS instead of leaving them as separate requests", () => {
   const html = '<html><head><link rel="stylesheet" href="styles.css" /></head><body><script src="script.js"></script></body></html>';
   const result = inlinePreviewAssets(html, { "styles.css": "body{color:red}", "script.js": "console.log(1)" });
-  assert.equal(
-    result,
-    '<html><head><style>body{color:red}</style></head><body><script>console.log(1)</script></body></html>'
-  );
+  assert.match(result, /<head><style>body\{color:red\}<\/style><\/head>/);
+  assert.match(result, /<body><script>console\.log\(1\)<\/script>/);
+});
+
+test("injects the point-and-select helper script into every preview page, before </body>", () => {
+  const html = "<html><body><p>Hi</p></body></html>";
+  const result = inlinePreviewAssets(html, {});
+  assert.match(result, /mtd-select-mode/);
+  assert.match(result, /<\/script><\/body><\/html>$/);
 });
 
 test("preview route accepts the session token via ?pt= when the sandboxed iframe navigates without cookies", async () => {
@@ -233,6 +238,60 @@ test("ignores an imageUrl that isn't one of this app's own uploads", async () =>
   await handleApi(request, env, new URL(request.url));
   const userMessage = requests[0].messages.find(m => m.role === "user");
   assert.equal(typeof userMessage.content, "string");
+});
+
+test("includes a selected element as context for the AI, but ignores one pointing at a file that isn't in the draft", async () => {
+  const requests = [];
+  mock.method(globalThis, "fetch", async (requestUrl, options) => {
+    requests.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ message: "Done", operations: [] }) } }],
+    }), { headers: { "content-type": "application/json" } });
+  });
+  const env = {
+    ...signedInEnv(),
+    OPENROUTER_API_KEY: "test-key",
+    SITE_CONTENT: kvNamespace(),
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.slice(1);
+        if (path === "styles.css") return new Response("body { color: black; }");
+        if (path === "script.js") return new Response("console.log('ready');");
+        return new Response("<!doctype html><html><head><title>Home</title></head><body>Hello</body></html>");
+      },
+    },
+  };
+  const request = new Request("https://example.com/api/editor/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://example.com" },
+    body: JSON.stringify({
+      message: "make this bigger",
+      selection: { file: "index.html", tag: "button", text: "Book Now", html: '<button class="cta">Book Now</button>' },
+    }),
+  });
+  await handleApi(request, env, new URL(request.url));
+  const userMessage = requests[0].messages.find(m => m.role === "user");
+  assert.match(userMessage.content, /Selected element \(on file "index\.html"\)/);
+  assert.match(userMessage.content, /Book Now/);
+
+  const requestsForBadFile = [];
+  mock.method(globalThis, "fetch", async (requestUrl, options) => {
+    requestsForBadFile.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ message: "Done", operations: [] }) } }],
+    }), { headers: { "content-type": "application/json" } });
+  });
+  const badRequest = new Request("https://example.com/api/editor/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://example.com" },
+    body: JSON.stringify({
+      message: "make this bigger",
+      selection: { file: "not-a-real-file.html", tag: "button", text: "Book Now", html: "<button>Book Now</button>" },
+    }),
+  });
+  await handleApi(badRequest, env, new URL(badRequest.url));
+  const badUserMessage = requestsForBadFile[0].messages.find(m => m.role === "user");
+  assert.doesNotMatch(badUserMessage.content, /Selected element/);
 });
 
 test("applies an exact guarded edit", () => {

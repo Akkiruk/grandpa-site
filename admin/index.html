@@ -84,6 +84,11 @@
                   <span id="photo-chip-label">Photo attached</span>
                   <button type="button" id="photo-remove" aria-label="Remove photo">✕</button>
                 </div>
+                <div class="selection-chip" id="selection-chip" hidden>
+                  <span aria-hidden="true">🎯</span>
+                  <span id="selection-chip-label">Selected</span>
+                  <button type="button" id="selection-remove" aria-label="Remove selection">✕</button>
+                </div>
               </div>
               <textarea
                 id="message"
@@ -111,6 +116,9 @@
               <button class="preview-size-button is-active" id="desktop-size" type="button" aria-pressed="true">Desktop</button>
               <button class="preview-size-button" id="phone-size" type="button" aria-pressed="false">Phone</button>
             </div>
+            <button class="quiet-button select-button" id="select-button" type="button" aria-pressed="false">
+              <span aria-hidden="true">🎯</span> <span class="select-button-label">Point at something</span>
+            </button>
             <button class="quiet-button preview-refresh" id="refresh-preview" type="button">Refresh</button>
             <button class="quiet-button mobile-close-preview" id="close-preview" type="button">Back to chat</button>
           </div>

@@ -13,6 +13,10 @@ const photoChip = document.getElementById("photo-chip");
 const photoChipPreview = document.getElementById("photo-chip-preview");
 const photoChipLabel = document.getElementById("photo-chip-label");
 const photoRemove = document.getElementById("photo-remove");
+const selectButton = document.getElementById("select-button");
+const selectionChip = document.getElementById("selection-chip");
+const selectionChipLabel = document.getElementById("selection-chip-label");
+const selectionRemove = document.getElementById("selection-remove");
 const conversationElement = document.getElementById("conversation");
 const suggestions = document.getElementById("suggestions");
 const publishButton = document.getElementById("publish-button");
@@ -54,8 +58,10 @@ let state = {
   conversation: [],
   busy: false,
   pendingPhoto: null,
+  pendingSelection: null,
 };
 let currentPreviewPath = "index.html";
+let selectModeActive = false;
 
 // Resizes/compresses a photo client-side before it ever leaves the phone -
 // a camera photo can be 10+ MB, which would slow the page down once it's
@@ -127,6 +133,58 @@ photoInput.addEventListener("change", async () => {
 });
 
 photoRemove.addEventListener("click", clearPendingPhoto);
+
+// "Point at something": lets the user click an element in the preview
+// instead of describing it in words. A small script injected into every
+// preview page (see PREVIEW_SELECT_SCRIPT in _worker.js) reports the
+// clicked element back here via postMessage - postMessage crosses the
+// sandboxed iframe's opaque-origin boundary fine even though cookies and
+// most other cross-frame access don't.
+function describeSelection(selection) {
+  const text = selection.text?.trim();
+  const short = text ? (text.length > 40 ? `${text.slice(0, 40)}…` : text) : "";
+  if (selection.tag === "img") {
+    return "the image";
+  }
+  if ((selection.tag === "a" || selection.tag === "button") && short) {
+    return `the "${short}" ${selection.tag === "a" ? "link" : "button"}`;
+  }
+  return short ? `the text "${short}"` : `the ${selection.tag} element`;
+}
+
+function setSelectMode(active) {
+  selectModeActive = active;
+  selectButton.classList.toggle("is-active", active);
+  selectButton.setAttribute("aria-pressed", String(active));
+  previewFrame.contentWindow?.postMessage({ type: "mtd-select-mode", enabled: active }, "*");
+}
+
+function clearPendingSelection() {
+  state.pendingSelection = null;
+  selectionChip.hidden = true;
+}
+
+selectButton.addEventListener("click", () => setSelectMode(!selectModeActive));
+
+window.addEventListener("message", event => {
+  if (event.source !== previewFrame.contentWindow || event.data?.type !== "mtd-selection") {
+    return;
+  }
+  state.pendingSelection = {
+    file: currentPreviewPath,
+    tag: event.data.tag,
+    text: event.data.text,
+    html: event.data.html,
+  };
+  selectionChipLabel.textContent = describeSelection(state.pendingSelection);
+  selectionChip.hidden = false;
+  selectModeActive = false;
+  selectButton.classList.remove("is-active");
+  selectButton.setAttribute("aria-pressed", "false");
+  messageInput.focus();
+});
+
+selectionRemove.addEventListener("click", clearPendingSelection);
 
 // Voice input: lets someone speak their request instead of typing it.
 // Only shown when the browser actually supports it (mainly Chrome/Edge;
@@ -317,6 +375,9 @@ async function refreshPreview(path = currentPreviewPath) {
   // it along (see inlinePreviewAssets in _worker.js).
   const token = window.Clerk?.session ? await window.Clerk.session.getToken() : "";
   previewFrame.src = `/preview/${currentPreviewPath}?t=${Date.now()}&pt=${encodeURIComponent(token || "")}`;
+  // A fresh iframe document loads with the "point at something" helper
+  // dormant, so the toggle button shouldn't claim it's still active.
+  setSelectMode(false);
 }
 
 async function undoLatestEdit(event) {
@@ -420,17 +481,19 @@ chatForm.addEventListener("submit", async event => {
   }
 
   const imagePath = state.pendingPhoto?.url;
+  const selection = state.pendingSelection;
   state.busy = true;
   messageInput.value = "";
   sendButton.disabled = true;
   suggestions.hidden = true;
   addMessage("user", message, { imagePath });
   clearPendingPhoto();
+  clearPendingSelection();
   const typing = addMessage("assistant", "", { typing: true });
   renderDraftState();
 
   try {
-    const data = await api("chat", { method: "POST", body: JSON.stringify({ message, imageUrl: imagePath }) });
+    const data = await api("chat", { method: "POST", body: JSON.stringify({ message, imageUrl: imagePath, selection }) });
     typing.remove();
     addMessage("assistant", data.message, { receipt: data.receipt, canUndo: true });
     if (data.receipt.aiProvider) {

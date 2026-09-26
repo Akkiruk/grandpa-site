@@ -564,6 +564,41 @@ h1 {
   padding: 4px;
 }
 
+.selection-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #eef3f2;
+  border: 1px solid rgba(40, 106, 104, 0.25);
+}
+
+.selection-chip span:not([aria-hidden]) {
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--muted, #5b6a73);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+}
+
+.select-button.is-active {
+  background: #eef3f2;
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
 .send-button {
   position: absolute;
   right: 9px;
@@ -754,6 +789,10 @@ h1 {
   }
 
   .preview-size {
+    display: none;
+  }
+
+  .select-button-label {
     display: none;
   }
 
