@@ -785,7 +785,32 @@ async function fetchDeployedAssetBytes(env, requestUrl, path) {
 // the site's own pre-existing local images (e.g. assets/photo.png, from the
 // deployed static assets) - anything not already an http(s):// or data:
 // URL.
-export async function inlinePreviewAssets(html, files, env, requestUrl) {
+// Rewrites every local <a href="..."> so it keeps carrying the preview
+// auth token forward. Once the user is inside the sandboxed iframe, any
+// link click is a navigation *initiated by the sandboxed (opaque-origin)
+// document itself*, which browsers treat as cross-site - so the Clerk
+// session cookie that authenticated the very first load doesn't get sent
+// for it. Query-string tokens aren't subject to that cookie rule, so this
+// keeps clicking between pages inside the preview working.
+function rewriteLocalLinks(html, token) {
+  if (!token) {
+    return html;
+  }
+  return html.replace(/<a\b([^>]*)\bhref=["']([^"']+)["']/gi, (match, attrs, href) => {
+    if (
+      /^([a-z][a-z0-9+.-]*:)?\/\//i.test(href) ||
+      /^(mailto|tel|javascript):/i.test(href) ||
+      href.startsWith("#") ||
+      href.startsWith("data:")
+    ) {
+      return match;
+    }
+    const separator = href.includes("?") ? "&" : "?";
+    return `<a${attrs}href="${href}${separator}pt=${encodeURIComponent(token)}"`;
+  });
+}
+
+export async function inlinePreviewAssets(html, files, env, requestUrl, previewToken) {
   let result = html;
   if (typeof files["styles.css"] === "string") {
     result = result.replace(
@@ -825,11 +850,24 @@ export async function inlinePreviewAssets(html, files, env, requestUrl) {
       result = result.split(src).join(`data:${contentType};base64,${arrayBufferToBase64(bytes)}`);
     }
   }
-  return result;
+  return rewriteLocalLinks(result, previewToken);
 }
 
 async function servePreview(request, env, url) {
-  if (!(await isAuthenticated(request, env))) {
+  // Normally the browser sends Clerk's session cookie automatically. But a
+  // navigation initiated from *inside* the sandboxed preview iframe (e.g.
+  // clicking a nav link) comes from an opaque origin, which browsers treat
+  // as cross-site, so that cookie doesn't get attached. As a fallback, also
+  // accept the session token via a "pt" query param (see refreshPreview in
+  // admin/app.js and rewriteLocalLinks above), passed as a Bearer token.
+  const previewToken = url.searchParams.get("pt") || "";
+  let authRequest = request;
+  if (previewToken && !request.headers.get("authorization")) {
+    const headers = new Headers(request.headers);
+    headers.set("authorization", `Bearer ${previewToken}`);
+    authRequest = new Request(request, { headers });
+  }
+  if (!(await isAuthenticated(authRequest, env))) {
     return Response.redirect(new URL("/admin/", url), 302);
   }
   const relativePath = url.pathname.slice("/preview/".length) || "index.html";
@@ -841,7 +879,9 @@ async function servePreview(request, env, url) {
       : path.endsWith(".css")
         ? "text/css; charset=utf-8"
         : "application/javascript; charset=utf-8";
-    const body = path.endsWith(".html") ? await inlinePreviewAssets(draft.files[path], draft.files, env, request.url) : draft.files[path];
+    const body = path.endsWith(".html")
+      ? await inlinePreviewAssets(draft.files[path], draft.files, env, request.url, previewToken)
+      : draft.files[path];
     return new Response(body, {
       headers: {
         "content-type": contentType,

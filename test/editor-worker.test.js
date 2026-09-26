@@ -63,6 +63,34 @@ test("inlines preview CSS and JS instead of leaving them as separate requests", 
   );
 });
 
+test("preview route accepts the session token via ?pt= when the sandboxed iframe navigates without cookies", async () => {
+  __setClerkClientFactory(() => ({
+    authenticateRequest: async request => {
+      const auth = request.headers.get("authorization");
+      return { toAuth: () => ({ userId: auth === "Bearer tok123" ? "user_test" : null }) };
+    },
+  }));
+  const kv = kvNamespace();
+  await kv.put(
+    "draft:current",
+    JSON.stringify({ id: "d1", files: { "about.html": "<html><body>About</body></html>" }, message: "m", updatedAt: 1 })
+  );
+  const env = { CLERK_SECRET_KEY: "sk_test", CLERK_PUBLISHABLE_KEY: "pk_test", SITE_CONTENT: kv };
+  const request = new Request("https://example.com/preview/about.html?pt=tok123");
+  const response = await worker.fetch(request, env);
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /About/);
+});
+
+test("rewrites local page links to carry the preview auth token, so clicks inside the sandboxed iframe stay signed in", async () => {
+  const html = '<nav><a href="about.html">About</a> <a href="/pricing.html">Pricing</a> <a href="https://example.com">External</a> <a href="#top">Top</a></nav>';
+  const result = await inlinePreviewAssets(html, {}, null, null, "tok123");
+  assert.match(result, /href="about\.html\?pt=tok123"/);
+  assert.match(result, /href="\/pricing\.html\?pt=tok123"/);
+  assert.match(result, /href="https:\/\/example\.com"/);
+  assert.match(result, /href="#top"/);
+});
+
 test("inlines an uploaded photo as a data URI instead of a same-origin request", async () => {
   const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
   const env = {

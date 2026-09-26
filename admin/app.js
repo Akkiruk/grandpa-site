@@ -304,9 +304,19 @@ function renderVersions() {
   });
 }
 
-function refreshPreview(path = currentPreviewPath) {
+async function refreshPreview(path = currentPreviewPath) {
   currentPreviewPath = path || "index.html";
-  previewFrame.src = `/preview/${currentPreviewPath}?t=${Date.now()}`;
+  // The preview iframe is sandboxed without allow-same-origin, so pages
+  // loaded inside it get an opaque origin. Any navigation the sandboxed
+  // document itself triggers (e.g. clicking a nav link to another page)
+  // is then treated as cross-site, so the Clerk session cookie doesn't
+  // travel with it. We work around that the same way the API calls do -
+  // carrying the session token explicitly - but since a link click can't
+  // attach an Authorization header, it's passed as a "pt" query param
+  // instead, and the worker rewrites every in-page link to keep passing
+  // it along (see inlinePreviewAssets in _worker.js).
+  const token = window.Clerk?.session ? await window.Clerk.session.getToken() : "";
+  previewFrame.src = `/preview/${currentPreviewPath}?t=${Date.now()}&pt=${encodeURIComponent(token || "")}`;
 }
 
 async function undoLatestEdit(event) {
