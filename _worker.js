@@ -281,7 +281,7 @@ export async function askOpenRouter(env, messages, fetchImpl = fetch) {
       "x-title": "Memories 2 DVD - USB Website Editor",
     },
     body: JSON.stringify({
-      model: env.OPENROUTER_MODEL || "minimax/minimax-m2.5",
+      model: env.OPENROUTER_MODEL || "cohere/north-mini-code:free",
       messages,
       response_format: { type: "json_object" },
       max_tokens: 4000,
