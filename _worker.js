@@ -781,6 +781,11 @@ async function servePublished(request, env, url) {
       // performance cost of always fetching fresh is negligible next to
       // never showing stale content after a publish.
       "cache-control": "no-store",
+      // Pragma/Expires are obsolete HTTP/1.0 holdovers that modern browsers
+      // ignore in favor of Cache-Control, but some mobile carrier proxies
+      // and older intermediate caches still honor them - cheap insurance.
+      pragma: "no-cache",
+      expires: "0",
       "content-security-policy": PUBLIC_CSP,
       "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
       "referrer-policy": "strict-origin-when-cross-origin",
