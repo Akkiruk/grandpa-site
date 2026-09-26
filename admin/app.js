@@ -17,6 +17,8 @@ const selectButton = document.getElementById("select-button");
 const selectionChip = document.getElementById("selection-chip");
 const selectionChipLabel = document.getElementById("selection-chip-label");
 const selectionRemove = document.getElementById("selection-remove");
+const selectionToast = document.getElementById("selection-toast");
+const selectionToastLabel = document.getElementById("selection-toast-label");
 const conversationElement = document.getElementById("conversation");
 const suggestions = document.getElementById("suggestions");
 const publishButton = document.getElementById("publish-button");
@@ -164,24 +166,52 @@ function clearPendingSelection() {
   selectionChip.hidden = true;
 }
 
+// Big, hard-to-miss confirmation the instant something is clicked in the
+// preview - the persistent chip in the composer is easy to miss since it's
+// a small element far from where the user was just looking (the preview
+// pane), especially on a phone-sized screen.
+function showSelectionToast(description) {
+  selectionToastLabel.textContent = `Item selected: ${description}`;
+  selectionToast.hidden = false;
+  // Restart the CSS animation on every selection, even back-to-back ones.
+  selectionToast.style.animation = "none";
+  void selectionToast.offsetWidth;
+  selectionToast.style.animation = "";
+  clearTimeout(showSelectionToast.hideTimer);
+  showSelectionToast.hideTimer = setTimeout(() => {
+    selectionToast.hidden = true;
+  }, 1800);
+}
+
 selectButton.addEventListener("click", () => setSelectMode(!selectModeActive));
 
 window.addEventListener("message", event => {
-  if (event.source !== previewFrame.contentWindow || event.data?.type !== "mtd-selection") {
+  if (event.source !== previewFrame.contentWindow) {
     return;
   }
-  state.pendingSelection = {
-    file: currentPreviewPath,
-    tag: event.data.tag,
-    text: event.data.text,
-    html: event.data.html,
-  };
-  selectionChipLabel.textContent = describeSelection(state.pendingSelection);
-  selectionChip.hidden = false;
-  selectModeActive = false;
-  selectButton.classList.remove("is-active");
-  selectButton.setAttribute("aria-pressed", "false");
-  messageInput.focus();
+  if (event.data?.type === "mtd-preview-expired") {
+    if (previewAuthRetries < 2) {
+      previewAuthRetries += 1;
+      refreshPreview(currentPreviewPath, { isRetry: true });
+    }
+    return;
+  }
+  if (event.data?.type === "mtd-selection") {
+    state.pendingSelection = {
+      file: currentPreviewPath,
+      tag: event.data.tag,
+      text: event.data.text,
+      html: event.data.html,
+    };
+    const description = describeSelection(state.pendingSelection);
+    selectionChipLabel.textContent = `Item selected: ${description}`;
+    selectionChip.hidden = false;
+    showSelectionToast(description);
+    selectModeActive = false;
+    selectButton.classList.remove("is-active");
+    selectButton.setAttribute("aria-pressed", "false");
+    messageInput.focus();
+  }
 });
 
 selectionRemove.addEventListener("click", clearPendingSelection);
@@ -362,8 +392,11 @@ function renderVersions() {
   });
 }
 
-async function refreshPreview(path = currentPreviewPath) {
+async function refreshPreview(path = currentPreviewPath, { isRetry = false } = {}) {
   currentPreviewPath = path || "index.html";
+  if (!isRetry) {
+    previewAuthRetries = 0;
+  }
   // The preview iframe is sandboxed without allow-same-origin, so pages
   // loaded inside it get an opaque origin. Any navigation the sandboxed
   // document itself triggers (e.g. clicking a nav link to another page)
@@ -379,6 +412,16 @@ async function refreshPreview(path = currentPreviewPath) {
   // dormant, so the toggle button shouldn't claim it's still active.
   setSelectMode(false);
 }
+
+// The embedded auth token in a page inside the preview is a snapshot from
+// when that page loaded, and Clerk's session tokens are short-lived - if
+// the user lingers a while before clicking to another page, that token can
+// expire and the worker can't authenticate the navigation. Rather than
+// show a broken frame and make the user hit Refresh themselves, the worker
+// posts this message back and we just reload the frame with a fresh
+// token. Capped so a genuinely broken session (actually signed out) can't
+// loop forever.
+let previewAuthRetries = 0;
 
 async function undoLatestEdit(event) {
   const button = event?.currentTarget;

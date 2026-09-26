@@ -87,6 +87,26 @@ test("preview route accepts the session token via ?pt= when the sandboxed iframe
   assert.match(await response.text(), /About/);
 });
 
+test("preview self-heals a stale/expired auth token instead of redirecting to a page that refuses to be framed", async () => {
+  // The embedded "pt" token is a snapshot of a short-lived Clerk session
+  // token, so it can expire if the user lingers on a page before clicking
+  // to another one. This used to redirect to /admin/, whose CSP has
+  // frame-ancestors 'none' by design (anti-clickjacking) - so the iframe
+  // just showed a blocked/broken screen with no way to recover short of
+  // the user manually hitting Refresh. It should instead stay on
+  // /preview/* (which IS allowed to be framed) and tell the parent to
+  // reload with a fresh token.
+  __setClerkClientFactory(() => ({
+    authenticateRequest: async () => ({ toAuth: () => ({ userId: null }) }),
+  }));
+  const env = { CLERK_SECRET_KEY: "sk_test", CLERK_PUBLISHABLE_KEY: "pk_test", SITE_CONTENT: kvNamespace() };
+  const request = new Request("https://example.com/preview/about.html?pt=expired-token");
+  const response = await worker.fetch(request, env);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-security-policy"), /frame-ancestors 'self'/);
+  assert.match(await response.text(), /mtd-preview-expired/);
+});
+
 test("rewrites local page links and image sources to carry the preview auth token, so clicks and image loads inside the sandboxed iframe stay signed in", () => {
   // Local images used to be base64-inlined directly into the HTML to work
   // around this same auth problem, but doing that synchronously in the

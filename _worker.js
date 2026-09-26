@@ -939,7 +939,30 @@ async function servePreview(request, env, url) {
     authRequest = new Request(request, { headers });
   }
   if (!(await isAuthenticated(authRequest, env))) {
-    return Response.redirect(new URL("/admin/", url), 302);
+    // The embedded "pt" token is a snapshot of the Clerk session token at
+    // the moment the page was rendered - those are short-lived (about a
+    // minute) and refresh automatically in the background, so a link
+    // clicked after lingering on a page for a while can carry a token
+    // that's since expired. Redirecting to /admin/ here used to be a dead
+    // end: that page's CSP refuses to be framed at all (by design, to
+    // block clickjacking), so the iframe just showed a blocked/broken
+    // screen until the user manually hit Refresh. Instead, stay on
+    // /preview/* (which IS allowed to be framed) and tell the parent page
+    // to reload this frame with a fresh token - self-healing with no
+    // visible error in the common case.
+    return new Response(
+      `<!doctype html><html><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#66717d;">Reconnecting…<script>parent.postMessage({ type: "mtd-preview-expired" }, "*");</script></body></html>`,
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "content-security-policy": buildPreviewCsp(url.origin),
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        },
+      }
+    );
   }
   const relativePath = url.pathname.slice("/preview/".length) || "index.html";
   const path = relativePath.endsWith("/") ? `${relativePath}index.html` : relativePath;

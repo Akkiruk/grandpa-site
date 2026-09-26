@@ -206,6 +206,48 @@ h1 {
   background: var(--surface-soft);
 }
 
+.selection-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 90vw;
+  padding: 14px 24px;
+  transform: translateX(-50%);
+  color: white;
+  background: var(--success);
+  border-radius: 999px;
+  box-shadow: 0 10px 30px rgba(23, 32, 42, 0.28);
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+  pointer-events: none;
+  animation: selection-toast-pop 1.8s ease forwards;
+}
+
+@keyframes selection-toast-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -12px) scale(0.9);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.04);
+  }
+  20% {
+    transform: translate(-50%, 0) scale(1);
+  }
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 .editor-header {
   flex: 0 0 auto;
   height: 68px;
