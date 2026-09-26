@@ -1,11 +1,10 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 
 import {
   __setClerkClientFactory,
   applyOperations,
   askOpenRouter,
-  askWorkersAI,
   describeOperations,
   extractJson,
   handleApi,
@@ -35,6 +34,7 @@ function signedInEnv(overrides = {}) {
 
 test.afterEach(() => {
   __setClerkClientFactory(null);
+  mock.restoreAll();
 });
 
 test("applies an exact guarded edit", () => {
@@ -67,40 +67,6 @@ test("accepts string and structured AI JSON responses", () => {
   const response = { message: "Done", operations: [] };
   assert.deepEqual(extractJson(JSON.stringify(response)), response);
   assert.equal(extractJson(response), response);
-});
-
-test("retries when Workers AI returns prose instead of JSON", async () => {
-  const calls = [];
-  const env = {
-    AI: {
-      async run(model, options) {
-        calls.push({ model, options });
-        return calls.length === 1
-          ? { response: "Changed the services page." }
-          : { response: { message: "Done", operations: [{ path: "services.html", find: "old", replace: "new" }] } };
-      },
-    },
-  };
-
-  const result = await askWorkersAI(env, [{ role: "user", content: "Update services" }]);
-  assert.equal(calls.length, 2);
-  assert.equal(result.operations[0].path, "services.html");
-  assert.match(calls[1].options.messages.at(-1).content, /Return only the required JSON object/);
-});
-
-test("explains when the daily free AI allocation is exhausted", async () => {
-  const env = {
-    AI: {
-      async run() {
-        throw new Error("4006: you have used up your daily free allocation of 10,000 neurons");
-      },
-    },
-  };
-
-  await assert.rejects(
-    askWorkersAI(env, [{ role: "user", content: "Update services" }]),
-    /resets daily at 00:00 UTC/
-  );
 });
 
 test("rejects protected paths and ambiguous replacements", () => {
@@ -187,19 +153,19 @@ test("undo restores stacked drafts and then returns to the live site", async () 
     },
   };
   let aiCall = 0;
+  mock.method(globalThis, "fetch", async () => {
+    aiCall += 1;
+    const content = aiCall === 1
+      ? { message: "Changed greeting.", operations: [{ path: "index.html", find: "Hello", replace: "Welcome" }] }
+      : { message: "Changed it again.", operations: [{ path: "index.html", find: "Welcome", replace: "Howdy" }] };
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
   const env = {
     ...signedInEnv(),
+    OPENROUTER_API_KEY: "test-key",
     SITE_CONTENT: kv,
-    AI: {
-      async run() {
-        aiCall += 1;
-        return {
-          response: aiCall === 1
-            ? { message: "Changed greeting.", operations: [{ path: "index.html", find: "Hello", replace: "Welcome" }] }
-            : { message: "Changed it again.", operations: [{ path: "index.html", find: "Welcome", replace: "Howdy" }] },
-        };
-      },
-    },
     ASSETS: {
       async fetch(request) {
         const path = new URL(request.url).pathname.slice(1);
@@ -265,8 +231,15 @@ test("rejects requests without a valid Clerk session", async () => {
 test("rejects a draft write when another request changed the draft first", async () => {
   let draftGetCalls = 0;
   const store = new Map();
+  mock.method(globalThis, "fetch", async () => {
+    const content = { message: "Changed greeting.", operations: [{ path: "index.html", find: "Hello", replace: "Welcome" }] };
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
   const env = {
     ...signedInEnv(),
+    OPENROUTER_API_KEY: "test-key",
     SITE_CONTENT: {
       async get(key, type) {
         if (key === "draft:current") {
@@ -281,13 +254,6 @@ test("rejects a draft write when another request changed the draft first", async
       },
       async put(key, value) { store.set(key, value); },
       async delete(key) { store.delete(key); },
-    },
-    AI: {
-      async run() {
-        return {
-          response: { message: "Changed greeting.", operations: [{ path: "index.html", find: "Hello", replace: "Welcome" }] },
-        };
-      },
     },
     ASSETS: {
       async fetch(request) {
@@ -323,7 +289,7 @@ test("uses the configured OpenRouter coding model without exposing the key", asy
   const body = JSON.parse(request.options.body);
   assert.equal(request.url, "https://openrouter.ai/api/v1/chat/completions");
   assert.equal(request.options.headers.authorization, "Bearer test-key");
-  assert.equal(body.model, "minimax/minimax-m2.5");
+  assert.equal(body.model, "openai/gpt-4o-mini");
   assert.equal(body.response_format.type, "json_object");
   assert.equal(result.message, "Done");
 });
@@ -331,7 +297,7 @@ test("uses the configured OpenRouter coding model without exposing the key", asy
 test("retries malformed OpenRouter output with the chosen model", async () => {
   const requests = [];
   const result = await askOpenRouter(
-    { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "minimax/minimax-m2.5" },
+    { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "some-org/some-test-model" },
     [{ role: "user", content: "Update services" }],
     async (url, options) => {
       requests.push(JSON.parse(options.body));
@@ -345,8 +311,8 @@ test("retries malformed OpenRouter output with the chosen model", async () => {
   );
 
   assert.equal(requests.length, 2);
-  assert.equal(requests[0].model, "minimax/minimax-m2.5");
-  assert.equal(requests[1].model, "minimax/minimax-m2.5");
+  assert.equal(requests[0].model, "some-org/some-test-model");
+  assert.equal(requests[1].model, "some-org/some-test-model");
   assert.match(requests[1].messages.at(-1).content, /Return only the required JSON object/);
   assert.equal(result.message, "Done");
 });

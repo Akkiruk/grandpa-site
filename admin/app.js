@@ -265,9 +265,7 @@ chatForm.addEventListener("submit", async event => {
     typing.remove();
     addMessage("assistant", data.message, { receipt: data.receipt, canUndo: true });
     if (data.receipt.aiProvider) {
-      providerLabel.textContent = data.receipt.usedFallback
-        ? `Backup used · ${data.receipt.aiProvider} · ${data.receipt.aiModel}`
-        : `${data.receipt.aiProvider} · ${data.receipt.aiModel}`;
+      providerLabel.textContent = `${data.receipt.aiProvider} · ${data.receipt.aiModel}`;
     }
     state.draft = data.draft;
     state.conversation.push(

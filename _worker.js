@@ -14,7 +14,7 @@ const MAX_FILE_BYTES = 300_000;
 const MAX_MESSAGE_LENGTH = 4_000;
 const HISTORY_LIMIT = 20;
 const DRAFT_UNDO_LIMIT = 8;
-const DEFAULT_OPENROUTER_MODEL = "minimax/minimax-m2.5";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 const AUTHORIZED_PARTIES = ["https://memories2dvdorusb.com", "https://memories-2-dvd-usb.pages.dev"];
 
 class ConflictError extends Error {}
@@ -368,45 +368,6 @@ export async function askOpenRouter(env, messages, fetchImpl = fetch) {
   throw new Error("OpenRouter returned an invalid edit. Please try the request again.");
 }
 
-export async function askWorkersAI(env, messages) {
-  const models = env.AI_MODEL
-    ? [env.AI_MODEL]
-    : ["@cf/qwen/qwen3-30b-a3b-fp8", "@cf/ibm-granite/granite-4.0-h-micro"];
-
-  for (const model of models) {
-    let retryMessage = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      let result;
-      try {
-        result = await env.AI.run(model, {
-          messages: retryMessage
-            ? [...messages, { role: "assistant", content: retryMessage }, {
-                role: "user",
-                content: "That response was not valid JSON. Return only the required JSON object with message and operations. Do not include prose or markdown.",
-              }]
-            : messages,
-          response_format: { type: "json_object" },
-          max_tokens: 4000,
-          temperature: 0.1,
-        });
-      } catch (error) {
-        if (/4006|daily free allocation|neurons/i.test(error?.message || "")) {
-          throw new Error("The free AI allowance has been used for today. It resets daily at 00:00 UTC.");
-        }
-        break;
-      }
-      const response = result.response || result.result?.response || "";
-      try {
-        return { ...extractJson(response), _model: model };
-      } catch (error) {
-        retryMessage = typeof response === "string" ? response : JSON.stringify(response);
-      }
-    }
-  }
-
-  throw new Error("The AI returned an invalid edit. Please try the request again.");
-}
-
 async function requestEdits(env, message, files, conversation) {
   const source = Object.entries(files)
     .map(([path, content]) => `\n--- FILE: ${path} ---\n${content}\n--- END FILE ---`)
@@ -423,26 +384,20 @@ async function requestEdits(env, message, files, conversation) {
     },
   ];
 
+  // No fallback provider on OpenRouter failure, deliberately: silently
+  // degrading to a different, weaker model masked real failures (a model
+  // burning its whole token budget on internal reasoning with no output)
+  // behind a misleading "free allowance used" error from an unrelated
+  // backup. If OpenRouter fails, that failure is the real, honest answer.
   if (env.OPENROUTER_API_KEY) {
-    try {
-      return {
-        ...(await askOpenRouter(env, messages)),
-        _provider: "OpenRouter",
-        _model: env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
-      };
-    } catch (error) {
-      if (!env.AI) {
-        throw error;
-      }
-      const fallback = await askWorkersAI(env, messages);
-      return { ...fallback, _provider: "Cloudflare AI", _fallback: true };
-    }
+    return {
+      ...(await askOpenRouter(env, messages)),
+      _provider: "OpenRouter",
+      _model: env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+    };
   }
   if (env.OPENAI_API_KEY) {
     return askOpenAI(env, messages);
-  }
-  if (env.AI) {
-    return askWorkersAI(env, messages);
   }
   throw new Error("The AI provider is not configured yet.");
 }
@@ -516,12 +471,10 @@ export async function handleApi(request, env, url) {
       draft: draftSummary(draft),
       history: history || [],
       conversation,
-      aiProvider: env.OPENROUTER_API_KEY ? "OpenRouter" : env.OPENAI_API_KEY ? "OpenAI" : "Cloudflare AI",
+      aiProvider: env.OPENROUTER_API_KEY ? "OpenRouter" : "OpenAI",
       aiModel: env.OPENROUTER_API_KEY
         ? env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL
-        : env.OPENAI_API_KEY
-          ? env.OPENAI_MODEL || "gpt-4.1-mini"
-          : env.AI_MODEL || "Automatic fallback",
+        : env.OPENAI_MODEL || "gpt-4.1-mini",
     });
   }
 
@@ -542,7 +495,6 @@ export async function handleApi(request, env, url) {
       const receipt = describeOperations(draft.files, files, result.operations);
       receipt.aiProvider = result._provider;
       receipt.aiModel = result._model;
-      receipt.usedFallback = Boolean(result._fallback);
       const checkpointId = await saveDraftCheckpoint(env, draft, Boolean(storedDraft));
       const allUndoIds = [...(draft.undoIds || []), checkpointId];
       const undoIds = allUndoIds.slice(-DRAFT_UNDO_LIMIT);
