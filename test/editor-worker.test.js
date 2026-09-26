@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { applyOperations, askWorkersAI, extractJson, isAllowedPath, validateFiles } from "../_worker.js";
+import {
+  applyOperations,
+  askWorkersAI,
+  describeOperations,
+  extractJson,
+  handleApi,
+  isAllowedPath,
+  validateFiles,
+} from "../_worker.js";
 
 const files = {
   "index.html": "<!doctype html><html><head><title>Home</title></head><body><h1>Hello</h1></body></html>",
@@ -60,6 +68,21 @@ test("retries when Workers AI returns prose instead of JSON", async () => {
   assert.match(calls[1].options.messages.at(-1).content, /Return only the required JSON object/);
 });
 
+test("explains when the daily free AI allocation is exhausted", async () => {
+  const env = {
+    AI: {
+      async run() {
+        throw new Error("4006: you have used up your daily free allocation of 10,000 neurons");
+      },
+    },
+  };
+
+  await assert.rejects(
+    askWorkersAI(env, [{ role: "user", content: "Update services" }]),
+    /resets daily at 00:00 UTC/
+  );
+});
+
 test("rejects protected paths and ambiguous replacements", () => {
   assert.equal(isAllowedPath("_worker.js"), false);
   assert.equal(isAllowedPath("ADMIN.html"), false);
@@ -79,4 +102,80 @@ test("rejects unsafe or structurally broken output", () => {
     () => validateFiles({ ...files, "index.html": "<html><body>Missing title</body></html>" }),
     /required page structure/
   );
+});
+
+test("describes accepted changes for the editor receipt", () => {
+  const operations = [
+    { path: "index.html", find: "Hello", replace: "Welcome" },
+    { path: "styles.css", find: "black", replace: "navy" },
+  ];
+  const result = applyOperations(files, operations);
+  assert.deepEqual(describeOperations(files, result, operations), {
+    files: ["index.html", "styles.css"],
+    operationCount: 2,
+    previewPath: "index.html",
+  });
+});
+
+test("undo restores stacked drafts and then returns to the live site", async () => {
+  const values = new Map();
+  const kv = {
+    async get(key, type) {
+      const value = values.get(key);
+      return type === "json" && value !== undefined ? JSON.parse(value) : value ?? null;
+    },
+    async put(key, value) {
+      values.set(key, value);
+    },
+    async delete(key) {
+      values.delete(key);
+    },
+  };
+  let aiCall = 0;
+  const env = {
+    ADMIN_PASSWORD: "test-password",
+    SITE_CONTENT: kv,
+    AI: {
+      async run() {
+        aiCall += 1;
+        return {
+          response: aiCall === 1
+            ? { message: "Changed greeting.", operations: [{ path: "index.html", find: "Hello", replace: "Welcome" }] }
+            : { message: "Changed it again.", operations: [{ path: "index.html", find: "Welcome", replace: "Howdy" }] },
+        };
+      },
+    },
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.slice(1);
+        if (path === "styles.css") return new Response("body { color: black; }");
+        if (path === "script.js") return new Response("console.log('ready');");
+        const title = path === "index.html" ? "Home" : path;
+        const body = path === "index.html" ? "Hello" : path;
+        return new Response(`<!doctype html><html><head><title>${title}</title></head><body>${body}</body></html>`);
+      },
+    },
+  };
+  const call = async (path, method, body, cookie = "") => {
+    const request = new Request(`https://example.com/api/editor/${path}`, {
+      method,
+      headers: { "content-type": "application/json", cookie },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return handleApi(request, env, new URL(request.url));
+  };
+
+  const login = await call("login", "POST", { password: "test-password" });
+  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  assert.equal((await call("chat", "POST", { message: "Change hello" }, cookie)).status, 200);
+  assert.equal((await call("chat", "POST", { message: "Change it again" }, cookie)).status, 200);
+  assert.match((await kv.get("draft:current", "json")).files["index.html"], /Howdy/);
+
+  const firstUndo = await (await call("undo", "POST", {}, cookie)).json();
+  assert.equal(firstUndo.draft.canUndo, true);
+  assert.match((await kv.get("draft:current", "json")).files["index.html"], /Welcome/);
+
+  const secondUndo = await (await call("undo", "POST", {}, cookie)).json();
+  assert.equal(secondUndo.draft, null);
+  assert.equal(await kv.get("draft:current", "json"), null);
 });

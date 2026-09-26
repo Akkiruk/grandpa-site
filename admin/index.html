@@ -77,10 +77,16 @@
           <div class="preview-bar">
             <span class="preview-dot"></span>
             <strong>Preview</strong>
+            <div class="preview-size" aria-label="Preview size">
+              <button class="preview-size-button is-active" id="desktop-size" type="button" aria-pressed="true">Desktop</button>
+              <button class="preview-size-button" id="phone-size" type="button" aria-pressed="false">Phone</button>
+            </div>
             <button class="quiet-button preview-refresh" id="refresh-preview" type="button">Refresh</button>
             <button class="quiet-button mobile-close-preview" id="close-preview" type="button">Back to chat</button>
           </div>
-          <iframe id="preview-frame" title="Preview of the website" src="/preview/index.html"></iframe>
+          <div class="preview-stage" id="preview-stage">
+            <iframe id="preview-frame" title="Preview of the website" src="/preview/index.html"></iframe>
+          </div>
         </section>
       </main>
     </div>

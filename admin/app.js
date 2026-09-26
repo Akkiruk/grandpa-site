@@ -14,6 +14,7 @@ const versionsDialog = document.getElementById("versions-dialog");
 const versionList = document.getElementById("version-list");
 const confirmDialog = document.getElementById("confirm-dialog");
 const previewFrame = document.getElementById("preview-frame");
+const previewStage = document.getElementById("preview-stage");
 const saveState = document.getElementById("save-state");
 const providerLabel = document.getElementById("provider-label");
 
@@ -23,6 +24,7 @@ let state = {
   conversation: [],
   busy: false,
 };
+let currentPreviewPath = "index.html";
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/editor/${path}`, {
@@ -58,7 +60,30 @@ function addMessage(role, text, options = {}) {
     message.dataset.typing = "true";
     message.innerHTML = '<span class="typing" aria-label="Working"><span></span><span></span><span></span></span>';
   } else {
-    message.textContent = text;
+    const copy = document.createElement("div");
+    copy.textContent = text;
+    message.append(copy);
+    if (options.receipt) {
+      const receipt = document.createElement("div");
+      receipt.className = `change-receipt${options.undone ? " is-undone" : ""}`;
+      const summary = document.createElement("strong");
+      const count = options.receipt.files.length;
+      summary.textContent = options.undone
+        ? "Change undone"
+        : `${count} file${count === 1 ? "" : "s"} changed`;
+      const paths = document.createElement("span");
+      paths.textContent = options.receipt.files.join(" · ");
+      receipt.append(summary, paths);
+      if (options.canUndo) {
+        const undoButton = document.createElement("button");
+        undoButton.type = "button";
+        undoButton.className = "receipt-undo";
+        undoButton.textContent = "Undo";
+        undoButton.addEventListener("click", undoLatestEdit);
+        receipt.append(undoButton);
+      }
+      message.append(receipt);
+    }
   }
   conversationElement.append(message);
   conversationElement.scrollTop = conversationElement.scrollHeight;
@@ -74,7 +99,11 @@ function renderConversation() {
     conversationElement.append(empty);
     return;
   }
-  state.conversation.forEach(item => addMessage(item.role === "user" ? "user" : "assistant", item.text));
+  state.conversation.forEach(item => addMessage(item.role === "user" ? "user" : "assistant", item.text, {
+    receipt: item.receipt,
+    undone: item.undone,
+    canUndo: Boolean(item.editId && item.editId === state.draft?.lastEditId && state.draft?.canUndo && !item.undone),
+  }));
 }
 
 function renderDraftState() {
@@ -112,8 +141,26 @@ function renderVersions() {
   });
 }
 
-function refreshPreview() {
-  previewFrame.src = `/preview/index.html?t=${Date.now()}`;
+function refreshPreview(path = currentPreviewPath) {
+  currentPreviewPath = path || "index.html";
+  previewFrame.src = `/preview/${currentPreviewPath}?t=${Date.now()}`;
+}
+
+async function undoLatestEdit(event) {
+  const button = event?.currentTarget;
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    const data = await api("undo", { method: "POST", body: "{}" });
+    state.draft = data.draft;
+    state.conversation = data.conversation;
+    renderConversation();
+    renderDraftState();
+    refreshPreview(data.previewPath);
+  } catch (error) {
+    addMessage("assistant", error.message, { error: true });
+  }
 }
 
 async function loadStatus() {
@@ -172,10 +219,13 @@ chatForm.addEventListener("submit", async event => {
   try {
     const data = await api("chat", { method: "POST", body: JSON.stringify({ message }) });
     typing.remove();
-    addMessage("assistant", data.message);
+    addMessage("assistant", data.message, { receipt: data.receipt, canUndo: true });
     state.draft = data.draft;
-    state.conversation.push({ role: "user", text: message }, { role: "assistant", text: data.message });
-    refreshPreview();
+    state.conversation.push(
+      { role: "user", text: message },
+      { role: "assistant", text: data.message, editId: data.draft.lastEditId, receipt: data.receipt }
+    );
+    refreshPreview(data.receipt.previewPath);
   } catch (error) {
     typing.remove();
     addMessage("assistant", error.message, { error: true });
@@ -260,7 +310,19 @@ versionsButton.addEventListener("click", () => {
   versionsDialog.showModal();
 });
 document.getElementById("close-versions").addEventListener("click", () => versionsDialog.close());
-document.getElementById("refresh-preview").addEventListener("click", refreshPreview);
+document.getElementById("refresh-preview").addEventListener("click", () => refreshPreview());
+document.getElementById("desktop-size").addEventListener("click", () => setPreviewSize("desktop"));
+document.getElementById("phone-size").addEventListener("click", () => setPreviewSize("phone"));
+
+function setPreviewSize(size) {
+  const phone = size === "phone";
+  previewStage.classList.toggle("is-phone", phone);
+  document.getElementById("desktop-size").classList.toggle("is-active", !phone);
+  document.getElementById("desktop-size").setAttribute("aria-pressed", String(!phone));
+  document.getElementById("phone-size").classList.toggle("is-active", phone);
+  document.getElementById("phone-size").setAttribute("aria-pressed", String(phone));
+}
+
 document.getElementById("mobile-preview").addEventListener("click", () => {
   document.body.classList.add("show-preview");
   refreshPreview();

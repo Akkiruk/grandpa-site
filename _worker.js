@@ -11,6 +11,7 @@ const BASE_FILES = [
 const MAX_FILE_BYTES = 300_000;
 const MAX_MESSAGE_LENGTH = 4_000;
 const HISTORY_LIMIT = 20;
+const DRAFT_UNDO_LIMIT = 8;
 const SESSION_COOKIE = "site_editor_session";
 
 const JSON_HEADERS = {
@@ -96,6 +97,16 @@ export function applyOperations(files, operations) {
     throw new Error("That request did not produce a visible change. Describe the exact old wording and the new wording you want.");
   }
   return nextFiles;
+}
+
+export function describeOperations(beforeFiles, afterFiles, operations) {
+  const files = Object.keys(afterFiles).filter(path => afterFiles[path] !== beforeFiles[path]);
+  const htmlFile = files.find(path => path.endsWith(".html"));
+  return {
+    files,
+    operationCount: operations.length,
+    previewPath: htmlFile || "index.html",
+  };
 }
 
 export function validateFiles(files) {
@@ -203,6 +214,31 @@ async function getDraft(env, requestUrl) {
   };
 }
 
+function draftSummary(draft) {
+  if (!draft) {
+    return null;
+  }
+  return {
+    id: draft.id,
+    message: draft.message,
+    request: draft.request,
+    updatedAt: draft.updatedAt,
+    lastEditId: draft.lastEditId || null,
+    receipt: draft.receipt || null,
+    canUndo: Boolean(draft.undoIds?.length),
+  };
+}
+
+async function saveDraftCheckpoint(env, draft, hadDraft) {
+  const id = crypto.randomUUID();
+  await env.SITE_CONTENT.put(`draft-undo:${id}`, JSON.stringify({ hadDraft, draft }));
+  return id;
+}
+
+async function deleteDraftCheckpoints(env, undoIds = []) {
+  await Promise.all(undoIds.map(id => env.SITE_CONTENT.delete(`draft-undo:${id}`)));
+}
+
 export function extractJson(value) {
   if (value && typeof value === "object") {
     return value;
@@ -236,31 +272,42 @@ async function askOpenAI(env, messages) {
 }
 
 export async function askWorkersAI(env, messages) {
-  const model = env.AI_MODEL || "@cf/qwen/qwen2.5-coder-32b-instruct";
-  let retryMessage = null;
+  const models = env.AI_MODEL
+    ? [env.AI_MODEL]
+    : ["@cf/qwen/qwen3-30b-a3b-fp8", "@cf/ibm-granite/granite-4.0-h-micro"];
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await env.AI.run(model, {
-      messages: retryMessage
-        ? [...messages, { role: "assistant", content: retryMessage }, {
-            role: "user",
-            content: "That response was not valid JSON. Return only the required JSON object with message and operations. Do not include prose or markdown.",
-          }]
-        : messages,
-      response_format: { type: "json_object" },
-      max_tokens: 12000,
-      temperature: 0.1,
-    });
-    const response = result.response || result.result?.response || "";
-    try {
-      return extractJson(response);
-    } catch (error) {
-      if (attempt === 1) {
-        throw new Error("The AI returned an invalid edit. Please try the request again.");
+  for (const model of models) {
+    let retryMessage = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let result;
+      try {
+        result = await env.AI.run(model, {
+          messages: retryMessage
+            ? [...messages, { role: "assistant", content: retryMessage }, {
+                role: "user",
+                content: "That response was not valid JSON. Return only the required JSON object with message and operations. Do not include prose or markdown.",
+              }]
+            : messages,
+          response_format: { type: "json_object" },
+          max_tokens: 4000,
+          temperature: 0.1,
+        });
+      } catch (error) {
+        if (/4006|daily free allocation|neurons/i.test(error?.message || "")) {
+          throw new Error("The free AI allowance has been used for today. It resets daily at 00:00 UTC.");
+        }
+        break;
       }
-      retryMessage = typeof response === "string" ? response : JSON.stringify(response);
+      const response = result.response || result.result?.response || "";
+      try {
+        return extractJson(response);
+      } catch (error) {
+        retryMessage = typeof response === "string" ? response : JSON.stringify(response);
+      }
     }
   }
+
+  throw new Error("The AI returned an invalid edit. Please try the request again.");
 }
 
 async function requestEdits(env, message, files, conversation) {
@@ -318,7 +365,7 @@ async function publishFiles(env, files) {
   ]);
 }
 
-async function handleApi(request, env, url) {
+export async function handleApi(request, env, url) {
   if (url.pathname === "/api/editor/login" && request.method === "POST") {
     const body = await request.json().catch(() => ({}));
     const suppliedHash = await sha256(String(body.password || ""));
@@ -350,7 +397,12 @@ async function handleApi(request, env, url) {
       env.SITE_CONTENT.get("history:index", "json"),
       readConversation(env),
     ]);
-    return json({ draft, history: history || [], conversation, aiProvider: env.OPENAI_API_KEY ? "OpenAI" : "Cloudflare AI" });
+    return json({
+      draft: draftSummary(draft),
+      history: history || [],
+      conversation,
+      aiProvider: env.OPENAI_API_KEY ? "OpenAI" : "Cloudflare AI",
+    });
   }
 
   if (url.pathname === "/api/editor/chat" && request.method === "POST") {
@@ -361,33 +413,85 @@ async function handleApi(request, env, url) {
     }
 
     try {
-      const draft = await getDraft(env, request.url);
+      const storedDraft = await env.SITE_CONTENT.get("draft:current", "json");
+      const draft = storedDraft || (await getDraft(env, request.url));
       const conversation = await readConversation(env);
       const result = await requestEdits(env, message, draft.files, conversation);
       const files = applyOperations(draft.files, result.operations);
+      const receipt = describeOperations(draft.files, files, result.operations);
+      const checkpointId = await saveDraftCheckpoint(env, draft, Boolean(storedDraft));
+      const allUndoIds = [...(draft.undoIds || []), checkpointId];
+      const undoIds = allUndoIds.slice(-DRAFT_UNDO_LIMIT);
+      const expiredUndoIds = allUndoIds.slice(0, -DRAFT_UNDO_LIMIT);
       const updatedDraft = {
         id: draft.id,
         files,
         message: String(result.message || "I prepared that change."),
         request: message,
         updatedAt: new Date().toISOString(),
+        lastEditId: checkpointId,
+        receipt,
+        undoIds,
       };
       const nextConversation = [
         ...conversation,
         { role: "user", text: message },
-        { role: "assistant", text: updatedDraft.message },
+        {
+          role: "assistant",
+          text: updatedDraft.message,
+          editId: checkpointId,
+          receipt,
+        },
       ].slice(-12);
       await Promise.all([
         env.SITE_CONTENT.put("draft:current", JSON.stringify(updatedDraft)),
         saveConversation(env, nextConversation),
+        deleteDraftCheckpoints(env, expiredUndoIds),
       ]);
-      return json({ message: updatedDraft.message, draft: { id: updatedDraft.id, updatedAt: updatedDraft.updatedAt } });
+      return json({ message: updatedDraft.message, draft: draftSummary(updatedDraft), receipt });
     } catch (error) {
       return json({ error: error.message || "The edit could not be prepared." }, 422);
     }
   }
 
+  if (url.pathname === "/api/editor/undo" && request.method === "POST") {
+    const draft = await env.SITE_CONTENT.get("draft:current", "json");
+    const checkpointId = draft?.undoIds?.at(-1);
+    if (!draft || !checkpointId) {
+      return json({ error: "There is no recent change to undo." }, 400);
+    }
+
+    const checkpoint = await env.SITE_CONTENT.get(`draft-undo:${checkpointId}`, "json");
+    if (!checkpoint) {
+      return json({ error: "That undo point is no longer available." }, 404);
+    }
+
+    const conversation = await readConversation(env);
+    const nextConversation = [
+      ...conversation.map(item => item.editId === checkpointId ? { ...item, undone: true } : item),
+      { role: "assistant", text: `Undone: ${draft.message}` },
+    ].slice(-12);
+
+    if (checkpoint.hadDraft) {
+      await env.SITE_CONTENT.put("draft:current", JSON.stringify(checkpoint.draft));
+    } else {
+      await env.SITE_CONTENT.delete("draft:current");
+    }
+    await Promise.all([
+      env.SITE_CONTENT.delete(`draft-undo:${checkpointId}`),
+      saveConversation(env, nextConversation),
+    ]);
+    return json({
+      message: `Undone: ${draft.message}`,
+      draft: draftSummary(checkpoint.hadDraft ? checkpoint.draft : null),
+      conversation: nextConversation,
+      previewPath: checkpoint.draft.receipt?.previewPath || draft.receipt?.previewPath || "index.html",
+    });
+  }
+
   if (url.pathname === "/api/editor/discard" && request.method === "POST") {
+    const draft = await env.SITE_CONTENT.get("draft:current", "json");
+    await deleteDraftCheckpoints(env, draft?.undoIds);
     await env.SITE_CONTENT.delete("draft:current");
     return json({ ok: true });
   }
@@ -400,6 +504,7 @@ async function handleApi(request, env, url) {
     const currentFiles = await loadPublishedFiles(env, request.url);
     await saveRevision(env, currentFiles, `Before: ${draft.message}`);
     await publishFiles(env, draft.files);
+    await deleteDraftCheckpoints(env, draft.undoIds);
     await env.SITE_CONTENT.delete("draft:current");
     return json({ ok: true, message: "The website is live with your changes." });
   }
