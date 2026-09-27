@@ -246,8 +246,23 @@ if (SpeechRecognitionApi) {
     micButton.classList.remove("is-listening");
     micButton.innerHTML = '<span aria-hidden="true">🎤</span> Speak';
   };
+  const MIC_ERROR_MESSAGES = {
+    "not-allowed": "Microphone access was blocked. Allow it for this site in the browser's address bar, then try again.",
+    "service-not-allowed": "Microphone access was blocked. Allow it for this site in the browser's address bar, then try again.",
+    "audio-capture": "No microphone was found. Check that one is connected and try again.",
+    network: "Voice input needs an internet connection. Check your connection and try again.",
+  };
   recognizer.addEventListener("end", stopListening);
-  recognizer.addEventListener("error", stopListening);
+  // Voice recognition used to fail completely silently on any error (a
+  // blocked mic permission, no mic connected, etc.) - the button would
+  // just stop listening with no explanation, which looked exactly like it
+  // "did nothing" rather than like a specific, fixable problem.
+  recognizer.addEventListener("error", event => {
+    stopListening();
+    if (event.error && event.error !== "no-speech" && event.error !== "aborted") {
+      addMessage("assistant", MIC_ERROR_MESSAGES[event.error] || "Voice input didn't work. Please try again or type your request instead.", { error: true });
+    }
+  });
 
   micButton.addEventListener("click", () => {
     if (isListening) {
@@ -261,6 +276,7 @@ if (SpeechRecognitionApi) {
       recognizer.start();
     } catch {
       stopListening();
+      addMessage("assistant", "Voice input didn't work. Please try again or type your request instead.", { error: true });
     }
   });
 }
