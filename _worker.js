@@ -484,7 +484,7 @@ export async function askOpenRouter(env, messages, fetchImpl = fetch) {
   throw new Error("OpenRouter returned an invalid edit. Please try the request again.");
 }
 
-async function requestEdits(env, message, files, conversation, imageUrl, selection) {
+async function requestEdits(env, message, files, conversation, imageUrl, selection, retryNote) {
   const source = Object.entries(files)
     .map(([path, content]) => `\n--- FILE: ${path} ---\n${content}\n--- END FILE ---`)
     .join("\n");
@@ -497,7 +497,7 @@ async function requestEdits(env, message, files, conversation, imageUrl, selecti
     : "";
   const requestText = `${recentConversation ? `Recent conversation:\n${recentConversation}\n\n` : ""}Current site files:${source}\n\nREQUEST:\n${message}${selectionBlock}${
     imageUrl ? `\n\nAttached photo URL (use this exact URL if you reference it): ${imageUrl}` : ""
-  }`;
+  }${retryNote ? `\n\n${retryNote}` : ""}`;
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -668,8 +668,33 @@ export async function handleApi(request, env, url) {
       const draft = storedDraft || (await getDraft(env, request.url));
       const selection = selectionInput && draft.files[selectionInput.file] !== undefined ? selectionInput : null;
       const conversation = await readConversation(env);
-      const result = await requestEdits(env, message, draft.files, conversation, imageUrl, selection);
-      const files = applyOperations(draft.files, result.operations);
+      // A wrong-but-plausible-looking guess at a file's exact current text
+      // ("find") is a common, usually self-correctable mistake - the model
+      // has the real file content right in front of it, it just needs to
+      // be told to actually re-check it instead of relying on its first
+      // guess. Retrying once with the specific failure fed back catches
+      // most of these before they ever reach the user as an error, without
+      // masking genuine problems (a request that truly can't be done still
+      // fails after the retry, with the same clear message it always had).
+      let result;
+      let files;
+      let lastApplyError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const retryNote = lastApplyError
+          ? `Your previous attempt failed: "${lastApplyError.message}" Re-read the exact current file content above very carefully and copy the find text character-for-character (including whitespace and punctuation) from it - never approximate or reconstruct it from memory. Then try again.`
+          : "";
+        result = await requestEdits(env, message, draft.files, conversation, imageUrl, selection, retryNote);
+        try {
+          files = applyOperations(draft.files, result.operations);
+          lastApplyError = null;
+          break;
+        } catch (error) {
+          lastApplyError = error;
+        }
+      }
+      if (lastApplyError) {
+        throw lastApplyError;
+      }
       const receipt = describeOperations(draft.files, files, result.operations);
       receipt.aiProvider = result._provider;
       receipt.aiModel = result._model;

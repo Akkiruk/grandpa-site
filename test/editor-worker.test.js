@@ -314,6 +314,43 @@ test("includes a selected element as context for the AI, but ignores one pointin
   assert.doesNotMatch(badUserMessage.content, /Selected element/);
 });
 
+test("self-corrects when the AI's first guess at the exact file text doesn't match, instead of failing right away", async () => {
+  const requests = [];
+  mock.method(globalThis, "fetch", async (requestUrl, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    const content =
+      requests.length === 1
+        ? JSON.stringify({ message: "Changed the font", operations: [{ path: "styles.css", find: "font-family: Georgia;", replace: "font-family: Arial;" }] })
+        : JSON.stringify({ message: "Changed the font", operations: [{ path: "styles.css", find: "font-family: Times New Roman;", replace: "font-family: Arial;" }] });
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { "content-type": "application/json" } });
+  });
+  const env = {
+    ...signedInEnv(),
+    OPENROUTER_API_KEY: "test-key",
+    SITE_CONTENT: kvNamespace(),
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.slice(1);
+        if (path === "styles.css") return new Response("body { font-family: Times New Roman; }");
+        if (path === "script.js") return new Response("console.log('ready');");
+        return new Response("<!doctype html><html><head><title>Home</title></head><body>Hello</body></html>");
+      },
+    },
+  };
+  const request = new Request("https://example.com/api/editor/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://example.com" },
+    body: JSON.stringify({ message: "this is the font that is wrong" }),
+  });
+  const response = await handleApi(request, env, new URL(request.url));
+  assert.equal(response.status, 200);
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].messages.at(-1).content, /Your previous attempt failed/);
+  const data = await response.json();
+  assert.match(data.receipt.files.join(","), /styles\.css/);
+});
+
 test("applies an exact guarded edit", () => {
   const result = applyOperations(files, [
     { path: "index.html", find: "<h1>Hello</h1>", replace: "<h1>Welcome</h1>" },
