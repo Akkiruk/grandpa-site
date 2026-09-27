@@ -94,6 +94,7 @@ Return JSON only in this shape:
 }
 
 Rules:
+- Figure out what the user actually wants before deciding what to edit - don't just pattern-match their wording onto the nearest similar-looking static text and stop there. A request usually describes a symptom or a goal, not a literal instruction: "the calculated number should have a $" means the displayed dollar VALUE needs the $, not a nearby heading that happens to contain the word "total." If a value is computed and written to the page at runtime (a price, a count, a total), that string is almost always built inside script.js, not sitting in the HTML - check there for the actual template/formatting code, and fix that, rather than editing a static label that merely sits near it. Before finishing, reread the original request and check whether your change actually makes the described thing true, not just whether it technically touches a matching word.
 - You may edit or create root-level .html files, styles.css, and script.js.
 - Prefer exact find/replace operations. The find text must occur exactly once.
 - Use a full content operation only for a new file or a deliberate full rewrite. A content operation REPLACES THE ENTIRE FILE - when rewriting an existing file this way, include everything in it, not just the part you're changing, or the rest is permanently deleted.
