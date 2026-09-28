@@ -26,7 +26,10 @@ $rootFiles = @(
   "styles.css",
   "script.js",
   "_worker.js",
-  "_headers"
+  "_headers",
+  "favicon.svg",
+  "robots.txt",
+  "sitemap.xml"
 )
 
 foreach ($file in $rootFiles) {

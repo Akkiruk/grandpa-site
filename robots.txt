@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /admin
+Disallow: /api/
+Disallow: /preview/
+Disallow: /uploads/
+Disallow: /failed/
+
+Sitemap: https://memories2dvdorusb.com/sitemap.xml
