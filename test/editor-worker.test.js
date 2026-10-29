@@ -700,7 +700,7 @@ test("manual backup is skipped when nothing changed, and restore loads it as an 
   const draft = { id: "d", files: { ...files, "index.html": files["index.html"].replace("Hello", "Changed") }, message: "m", undoIds: [] };
   await env.SITE_CONTENT.put("draft:current", JSON.stringify(draft));
   const restored = await (await apiCall(env, "backup/restore", "POST", { backupId: first.backups[0].id })).json();
-  assert.match(restored.message, /Restored the backup/);
+  assert.match(restored.message, /press Publish changes/);
   const live = await env.SITE_CONTENT.get("draft:current", "json");
   assert.match(live.files["index.html"], /Welcome|index\.html/);
   assert.doesNotMatch(live.files["index.html"], /Changed/);
@@ -729,4 +729,15 @@ test("nightly backup only runs at Eastern midnight and only when things changed"
 
   await env.SITE_CONTENT.put("draft:current", JSON.stringify({ id: "d", files: { ...files, "script.js": "//new" } }));
   assert.deepEqual(await runAutoBackup(env, night), { created: true });
+});
+
+test("old before-publish versions show up in the backups list and can be restored", async () => {
+  const env = backupEnv();
+  const oldFiles = { ...files, "script.js": "//old" };
+  await env.SITE_CONTENT.put("revision:r1", JSON.stringify({ id: "r1", files: oldFiles, createdAt: "2026-01-01T00:00:00.000Z" }));
+  await env.SITE_CONTENT.put("history:index", JSON.stringify([{ id: "r1", description: "x", createdAt: "2026-01-01T00:00:00.000Z" }]));
+  const { backups } = await (await apiCall(env, "backups")).json();
+  assert.equal(backups[0].source, "version");
+  await apiCall(env, "backup/restore", "POST", { backupId: "r1", source: "version" });
+  assert.equal((await env.SITE_CONTENT.get("draft:current", "json")).files["script.js"], "//old");
 });

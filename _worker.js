@@ -651,8 +651,26 @@ export async function runAutoBackup(env, now = new Date()) {
   if (!files) {
     return { skipped: "no editor changes yet" };
   }
-  const { created } = await saveBackup(env, files, { kind: "auto", label: "Automatic nightly backup" });
+  const { created } = await saveBackup(env, files, { kind: "auto", label: "Saved automatically at midnight" });
   return created ? { created: true } : { skipped: "unchanged" };
+}
+
+// Backups plus the older "before publishing" copies, newest first, in one list.
+async function listAllBackups(env) {
+  const [backups, history] = await Promise.all([
+    env.SITE_CONTENT.get("backups:index", "json"),
+    env.SITE_CONTENT.get("history:index", "json"),
+  ]);
+  const versions = (history || []).map(item => ({
+    id: item.id,
+    source: "version",
+    kind: "auto",
+    label: "Saved automatically before a change went live",
+    createdAt: item.createdAt,
+  }));
+  return [...(backups || []).map(item => ({ ...item, source: "backup" })), ...versions].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
 }
 
 async function putDraftIfUnchanged(env, expectedRaw, nextDraft) {
@@ -887,27 +905,33 @@ export async function handleApi(request, env, url) {
   }
 
   if (url.pathname === "/api/editor/backups" && request.method === "GET") {
-    return json({ backups: (await env.SITE_CONTENT.get("backups:index", "json")) || [] });
+    return json({ backups: await listAllBackups(env) });
   }
 
   if (url.pathname === "/api/editor/backup" && request.method === "POST") {
     const draftRaw = await env.SITE_CONTENT.get("draft:current");
     const draft = draftRaw ? JSON.parse(draftRaw) : await getDraft(env, request.url);
-    const { created, backup } = await saveBackup(env, draft.files, { kind: "manual", label: "Backup you made" });
-    const backups = (await env.SITE_CONTENT.get("backups:index", "json")) || [];
+    const { created, backup } = await saveBackup(env, draft.files, { kind: "manual", label: "Saved by you" });
+    const backups = await listAllBackups(env);
     return json({
       ok: true,
       created,
       backups,
       message: created
-        ? "Backup saved."
-        : `Nothing has changed since your last backup (${backup.createdAt}), so it is already safe.`,
+        ? "Done. Your website is saved."
+        : "Already saved. Nothing has changed since the last backup.",
     });
   }
 
   if (url.pathname === "/api/editor/backup/restore" && request.method === "POST") {
     const body = await request.json().catch(() => ({}));
-    const backup = await env.SITE_CONTENT.get(`backup:${body.backupId || ""}`, "json");
+    // Publishing already keeps a copy of the live site first ("revisions"),
+    // and those are listed alongside backups so there is only one place to
+    // look for an old copy.
+    const backup = await env.SITE_CONTENT.get(
+      `${body.source === "version" ? "revision" : "backup"}:${body.backupId || ""}`,
+      "json"
+    );
     if (!backup?.files) {
       return json({ error: "That backup was not found." }, 404);
     }
@@ -918,13 +942,13 @@ export async function handleApi(request, env, url) {
     const current = storedDraft || (await getDraft(env, request.url));
     // Restoring replaces the working copy, so keep what's there first: both as
     // a backup, and as an undo point on the draft.
-    await saveBackup(env, current.files, { kind: "auto", label: "Saved automatically before a restore" });
+    await saveBackup(env, current.files, { kind: "auto", label: "Saved automatically before going back" });
     const checkpointId = await saveDraftCheckpoint(env, current, Boolean(storedDraft));
     const allUndoIds = [...(current.undoIds || []), checkpointId];
     const undoIds = allUndoIds.slice(-DRAFT_UNDO_LIMIT);
     const expiredUndoIds = allUndoIds.slice(0, -DRAFT_UNDO_LIMIT);
 
-    const message = `Restored the backup from ${backup.createdAt}. Check the preview, then publish it to put it on the live site.`;
+    const message = "Done. Look at the preview, then press Publish changes to make it live.";
     const receipt = {
       files: Object.keys(backup.files).filter(path => backup.files[path] !== current.files[path]),
       operationCount: 1,
@@ -950,7 +974,7 @@ export async function handleApi(request, env, url) {
       message,
       draft: draftSummary(updatedDraft),
       conversation,
-      backups: (await env.SITE_CONTENT.get("backups:index", "json")) || [],
+      backups: await listAllBackups(env),
       previewPath: "index.html",
     });
   }

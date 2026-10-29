@@ -105,7 +105,6 @@
             </form>
             <div class="draft-actions">
               <button class="secondary-button" id="backups-button" type="button">Backups</button>
-              <button class="secondary-button" id="versions-button" type="button">Versions</button>
               <button class="secondary-button" id="discard-button" type="button" disabled>Discard</button>
               <button class="primary-button" id="publish-button" type="button" disabled>Publish changes</button>
             </div>
@@ -133,28 +132,17 @@
       </main>
     </div>
 
-    <dialog class="versions-dialog" id="versions-dialog">
-      <div class="dialog-header">
-        <div>
-          <p class="eyebrow">Saved copies</p>
-          <h2>Earlier versions</h2>
-        </div>
-        <button class="quiet-button" id="close-versions" type="button">Close</button>
-      </div>
-      <div class="version-list" id="version-list"></div>
-    </dialog>
-
     <dialog class="versions-dialog" id="backups-dialog">
       <div class="dialog-header">
         <div>
-          <p class="eyebrow">Safety copies</p>
+          <p class="eyebrow">Keep your website safe</p>
           <h2>Backups</h2>
         </div>
         <button class="quiet-button" id="close-backups" type="button">Close</button>
       </div>
-      <p class="backup-note">A backup is also saved automatically every midnight, if anything changed that day.</p>
-      <button class="primary-button" id="create-backup" type="button">Create backup now</button>
+      <button class="primary-button backup-create" id="create-backup" type="button">Save a backup now</button>
       <p class="backup-status" id="backup-status" role="status"></p>
+      <p class="backup-note">Your website is also saved by itself every night. To go back to an older copy, press Restore next to it.</p>
       <div class="version-list" id="backup-list"></div>
     </dialog>
 

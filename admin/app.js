@@ -23,9 +23,6 @@ const conversationElement = document.getElementById("conversation");
 const suggestions = document.getElementById("suggestions");
 const publishButton = document.getElementById("publish-button");
 const discardButton = document.getElementById("discard-button");
-const versionsButton = document.getElementById("versions-button");
-const versionsDialog = document.getElementById("versions-dialog");
-const versionList = document.getElementById("version-list");
 const confirmDialog = document.getElementById("confirm-dialog");
 const previewFrame = document.getElementById("preview-frame");
 const previewStage = document.getElementById("preview-stage");
@@ -381,33 +378,6 @@ function renderDraftState() {
   liveStatusBanner.hidden = !hasDraft;
 }
 
-function renderVersions() {
-  versionList.replaceChildren();
-  if (!state.history.length) {
-    const empty = document.createElement("p");
-    empty.textContent = "No earlier versions yet.";
-    versionList.append(empty);
-    return;
-  }
-  state.history.forEach(version => {
-    const row = document.createElement("div");
-    row.className = "version-row";
-    const copy = document.createElement("div");
-    const strong = document.createElement("strong");
-    strong.textContent = new Date(version.createdAt).toLocaleString();
-    const description = document.createElement("p");
-    description.textContent = version.description;
-    copy.append(strong, description);
-    const button = document.createElement("button");
-    button.className = "secondary-button";
-    button.type = "button";
-    button.textContent = "Restore";
-    button.addEventListener("click", () => restoreVersion(version.id));
-    row.append(copy, button);
-    versionList.append(row);
-  });
-}
-
 async function refreshPreview(path = currentPreviewPath, { isRetry = false } = {}) {
   currentPreviewPath = path || "index.html";
   if (!isRetry) {
@@ -470,7 +440,6 @@ async function loadStatus() {
     setAuthenticated(true);
     renderConversation();
     renderDraftState();
-    renderVersions();
     refreshPreview();
   } catch (error) {
     if (error.status === 401) {
@@ -625,40 +594,26 @@ discardButton.addEventListener("click", async () => {
   }
 });
 
-async function restoreVersion(revisionId) {
-  if (!window.confirm("Restore this earlier version to the live website?")) {
-    return;
-  }
-  try {
-    const data = await api("rollback", {
-      method: "POST",
-      body: JSON.stringify({ revisionId }),
-    });
-    versionsDialog.close();
-    state.draft = null;
-    addMessage("assistant", data.message);
-    await loadStatus();
-  } catch (error) {
-    addMessage("assistant", error.message, { error: true });
-  }
-}
-
-versionsButton.addEventListener("click", () => {
-  renderVersions();
-  versionsDialog.showModal();
-});
-document.getElementById("close-versions").addEventListener("click", () => versionsDialog.close());
-
 const backupsDialog = document.getElementById("backups-dialog");
 const backupList = document.getElementById("backup-list");
 const backupStatus = document.getElementById("backup-status");
 const createBackupButton = document.getElementById("create-backup");
 
+function backupDate(backup) {
+  return new Date(backup.createdAt).toLocaleString([], {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function renderBackups(backups) {
   backupList.replaceChildren();
   if (!backups.length) {
     const empty = document.createElement("p");
-    empty.textContent = "No backups yet.";
+    empty.textContent = "Nothing saved yet. Press "Save a backup now" above.";
     backupList.append(empty);
     return;
   }
@@ -667,9 +622,9 @@ function renderBackups(backups) {
     row.className = "version-row";
     const copy = document.createElement("div");
     const strong = document.createElement("strong");
-    strong.textContent = new Date(backup.createdAt).toLocaleString();
+    strong.textContent = backupDate(backup);
     const description = document.createElement("p");
-    description.textContent = backup.kind === "manual" ? "Backup you made" : backup.label;
+    description.textContent = backup.label;
     copy.append(strong, description);
     const button = document.createElement("button");
     button.className = "secondary-button";
@@ -707,13 +662,12 @@ createBackupButton.addEventListener("click", async () => {
 });
 
 async function restoreBackup(backup, button) {
-  const when = new Date(backup.createdAt).toLocaleString();
-  if (!window.confirm(`Go back to the backup from ${when}? It will show in the preview first, and your current version is saved as a backup before this.`)) {
+  if (!window.confirm("Go back to this copy? Your current version will be saved first.")) {
     return;
   }
   button.disabled = true;
   try {
-    const data = await api("backup/restore", { method: "POST", body: JSON.stringify({ backupId: backup.id }) });
+    const data = await api("backup/restore", { method: "POST", body: JSON.stringify({ backupId: backup.id, source: backup.source }) });
     backupsDialog.close();
     state.draft = data.draft;
     state.conversation = data.conversation;
