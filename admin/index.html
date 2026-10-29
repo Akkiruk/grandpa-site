@@ -142,8 +142,18 @@
       </div>
       <button class="primary-button backup-create" id="create-backup" type="button">Save a backup now</button>
       <p class="backup-status" id="backup-status" role="status"></p>
+      <p class="backup-note" id="backup-last-auto"></p>
       <p class="backup-note">Your website is also saved by itself every night. To go back to an older copy, press Restore next to it.</p>
       <div class="version-list" id="backup-list"></div>
+      <button class="secondary-button backup-download" id="download-backup" type="button">Download a copy to this computer</button>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="ask-dialog">
+      <h2 id="ask-message"></h2>
+      <div class="confirm-actions">
+        <button class="secondary-button" id="ask-no" type="button">No, cancel</button>
+        <button class="primary-button" id="ask-yes" type="button">Yes</button>
+      </div>
     </dialog>
 
     <dialog class="confirm-dialog" id="confirm-dialog">

@@ -741,3 +741,37 @@ test("old before-publish versions show up in the backups list and can be restore
   await apiCall(env, "backup/restore", "POST", { backupId: "r1", source: "version" });
   assert.equal((await env.SITE_CONTENT.get("draft:current", "json")).files["script.js"], "//old");
 });
+
+test("admin/app.js is syntactically valid", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { Script } = await import("node:vm");
+  new Script(await readFile(new URL("../admin/app.js", import.meta.url), "utf8"), { filename: "admin/app.js" });
+});
+
+test("publishing stops serving pages that are no longer part of the site", async () => {
+  const env = backupEnv();
+  const page = "<!doctype html><html><head><title>x</title></head><body>x</body></html>";
+  await env.SITE_CONTENT.put("published:manifest", JSON.stringify([...Object.keys(files), "extra.html"]));
+  for (const [path, content] of Object.entries({ ...files, "extra.html": page })) {
+    await env.SITE_CONTENT.put(`published:${path}`, content);
+  }
+  const backup = await (await apiCall(env, "backup", "POST")).json();
+  await env.SITE_CONTENT.put("draft:current", JSON.stringify({ id: "d", files, message: "m", undoIds: [] }));
+  await apiCall(env, "backup/restore", "POST", { backupId: backup.backups[0].id });
+  // Restored copy still has extra.html; now publish one that doesn't.
+  await env.SITE_CONTENT.put("draft:current", JSON.stringify({ id: "d", files, message: "m", undoIds: [] }));
+  assert.equal((await apiCall(env, "publish", "POST")).status, 200);
+  assert.equal(await env.SITE_CONTENT.get("published:extra.html"), null);
+});
+
+test("nightly backup records whether it worked, including failures", async () => {
+  const env = backupEnv();
+  const night = new Date("2026-01-15T05:00:00Z");
+  await env.SITE_CONTENT.put("published:manifest", JSON.stringify(["index.html"]));
+  await assert.rejects(runAutoBackup(env, night), /missing from storage/);
+  assert.equal((await env.SITE_CONTENT.get("backups:lastAuto", "json")).ok, false);
+  await env.SITE_CONTENT.put("published:index.html", files["index.html"]);
+  await runAutoBackup(env, night);
+  assert.equal((await env.SITE_CONTENT.get("backups:lastAuto", "json")).created, true);
+  assert.equal((await (await apiCall(env, "backups")).json()).lastAuto.ok, true);
+});

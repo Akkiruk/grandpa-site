@@ -580,7 +580,7 @@ document.getElementById("confirm-publish").addEventListener("click", async () =>
 });
 
 discardButton.addEventListener("click", async () => {
-  if (!window.confirm("Discard the changes in the preview?")) {
+  if (!(await askConfirm("Throw away the changes in the preview?"))) {
     return;
   }
   try {
@@ -613,7 +613,7 @@ function renderBackups(backups) {
   backupList.replaceChildren();
   if (!backups.length) {
     const empty = document.createElement("p");
-    empty.textContent = "Nothing saved yet. Press "Save a backup now" above.";
+    empty.textContent = "Nothing saved yet. Press the Save a backup now button above.";
     backupList.append(empty);
     return;
   }
@@ -636,12 +636,65 @@ function renderBackups(backups) {
   });
 }
 
+// Large, plain yes/no question in place of the browser's small built-in one.
+const askDialog = document.getElementById("ask-dialog");
+function askConfirm(question) {
+  document.getElementById("ask-message").textContent = question;
+  return new Promise(resolve => {
+    const done = answer => {
+      askDialog.close();
+      resolve(answer);
+    };
+    document.getElementById("ask-yes").onclick = () => done(true);
+    document.getElementById("ask-no").onclick = () => done(false);
+    askDialog.oncancel = () => resolve(false);
+    askDialog.showModal();
+  });
+}
+
+function renderLastAuto(lastAuto) {
+  const line = document.getElementById("backup-last-auto");
+  line.classList.toggle("is-error", Boolean(lastAuto && !lastAuto.ok));
+  if (!lastAuto) {
+    line.textContent = "The first automatic save happens tonight at midnight, if anything has changed.";
+  } else if (!lastAuto.ok) {
+    line.textContent = "Last night's automatic save did not work. Please press the button above to save now, and tell your helper.";
+  } else {
+    line.textContent = `Last automatic check: ${new Date(lastAuto.at).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}. ${
+      lastAuto.created ? "A new backup was saved." : "Nothing had changed, so nothing new was needed."
+    }`;
+  }
+}
+
+document.getElementById("download-backup").addEventListener("click", async () => {
+  try {
+    const token = window.Clerk?.session ? await window.Clerk.session.getToken() : null;
+    const response = await fetch("/api/editor/backup/download", {
+      credentials: "same-origin",
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) {
+      throw new Error((await response.json().catch(() => ({}))).error || "The download did not work.");
+    }
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = `website-copy-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    backupStatus.textContent = "Done. The copy is in your Downloads folder.";
+  } catch (error) {
+    backupStatus.textContent = error.message;
+  }
+});
+
 async function openBackups() {
   backupStatus.textContent = "";
   backupList.replaceChildren();
   backupsDialog.showModal();
   try {
-    renderBackups((await api("backups", { method: "GET" })).backups);
+    const data = await api("backups", { method: "GET" });
+    renderBackups(data.backups);
+    renderLastAuto(data.lastAuto);
   } catch (error) {
     backupStatus.textContent = error.message;
   }
@@ -662,7 +715,7 @@ createBackupButton.addEventListener("click", async () => {
 });
 
 async function restoreBackup(backup, button) {
-  if (!window.confirm("Go back to this copy? Your current version will be saved first.")) {
+  if (!(await askConfirm("Go back to this copy? Your current version will be saved first."))) {
     return;
   }
   button.disabled = true;

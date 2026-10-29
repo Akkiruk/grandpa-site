@@ -12,7 +12,7 @@ const BASE_FILES = [
 
 const MAX_FILE_BYTES = 300_000;
 const MAX_MESSAGE_LENGTH = 4_000;
-const HISTORY_LIMIT = 20;
+const HISTORY_LIMIT = 30;
 const DRAFT_UNDO_LIMIT = 8;
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.1";
 const AUTHORIZED_PARTIES = ["https://memories2dvdorusb.com", "https://memories-2-dvd-usb.pages.dev"];
@@ -26,7 +26,7 @@ const UPLOAD_TYPES = {
 const UPLOAD_INDEX_LIMIT = 200;
 const MAX_SELECTION_TEXT_LENGTH = 300;
 const MAX_SELECTION_HTML_LENGTH = 1200;
-const BACKUP_LIMITS = { auto: 14, manual: 20 };
+const BACKUP_LIMITS = { auto: 30, manual: 30 };
 
 class ConflictError extends Error {}
 
@@ -543,12 +543,12 @@ async function saveRevision(env, files, description) {
   const id = new Date().toISOString().replace(/[.:]/g, "-");
   const revision = { id, files, description, createdAt: new Date().toISOString() };
   const history = (await env.SITE_CONTENT.get("history:index", "json")) || [];
+  const nextHistory = [{ id, description, createdAt: revision.createdAt }, ...history];
   await Promise.all([
     env.SITE_CONTENT.put(`revision:${id}`, JSON.stringify(revision)),
-    env.SITE_CONTENT.put(
-      "history:index",
-      JSON.stringify([{ id, description, createdAt: revision.createdAt }, ...history].slice(0, HISTORY_LIMIT))
-    ),
+    env.SITE_CONTENT.put("history:index", JSON.stringify(nextHistory.slice(0, HISTORY_LIMIT))),
+    // Copies that fall off the list are unreachable; don't leave them behind.
+    ...nextHistory.slice(HISTORY_LIMIT).map(item => env.SITE_CONTENT.delete(`revision:${item.id}`)),
   ]);
   return revision;
 }
@@ -559,10 +559,17 @@ async function publishFilesIfUnchanged(env, files, expectedManifestRaw) {
   if (currentManifestRaw !== expectedManifestRaw) {
     throw new ConflictError("The published site changed elsewhere. Refresh and try again.");
   }
+  const previousPaths = currentManifestRaw ? JSON.parse(currentManifestRaw) : [];
   // Write file blobs first and the manifest last so a mid-write failure leaves
   // the previous manifest (and therefore a consistent published site) in place.
   await Promise.all(Object.entries(files).map(([path, content]) => env.SITE_CONTENT.put(`published:${path}`, content)));
   await env.SITE_CONTENT.put("published:manifest", JSON.stringify(Object.keys(files)));
+  // Pages that are no longer part of the site (e.g. after going back to an
+  // older copy) must stop being served: servePublished answers any path it
+  // finds in KV, regardless of the manifest.
+  await Promise.all(
+    previousPaths.filter(path => !(path in files)).map(path => env.SITE_CONTENT.delete(`published:${path}`))
+  );
 }
 
 // ---- Backups -------------------------------------------------------------
@@ -647,12 +654,26 @@ export async function runAutoBackup(env, now = new Date()) {
   if (!isEasternMidnight(now)) {
     return { skipped: "not midnight" };
   }
-  const files = await readWorkingFilesFromKv(env);
-  if (!files) {
-    return { skipped: "no editor changes yet" };
+  // Recorded so the Backups window can show whether the nightly job is
+  // actually working, instead of failing silently.
+  let result;
+  try {
+    const files = await readWorkingFilesFromKv(env);
+    if (!files) {
+      result = { skipped: "no editor changes yet" };
+    } else {
+      const { created } = await saveBackup(env, files, { kind: "auto", label: "Saved automatically at midnight" });
+      result = created ? { created: true } : { skipped: "unchanged" };
+    }
+  } catch (error) {
+    await env.SITE_CONTENT.put(
+      "backups:lastAuto",
+      JSON.stringify({ at: now.toISOString(), ok: false, error: error.message })
+    );
+    throw error;
   }
-  const { created } = await saveBackup(env, files, { kind: "auto", label: "Saved automatically at midnight" });
-  return created ? { created: true } : { skipped: "unchanged" };
+  await env.SITE_CONTENT.put("backups:lastAuto", JSON.stringify({ at: now.toISOString(), ok: true, ...result }));
+  return result;
 }
 
 // Backups plus the older "before publishing" copies, newest first, in one list.
@@ -905,7 +926,22 @@ export async function handleApi(request, env, url) {
   }
 
   if (url.pathname === "/api/editor/backups" && request.method === "GET") {
-    return json({ backups: await listAllBackups(env) });
+    return json({
+      backups: await listAllBackups(env),
+      lastAuto: await env.SITE_CONTENT.get("backups:lastAuto", "json"),
+    });
+  }
+
+  if (url.pathname === "/api/editor/backup/download" && request.method === "GET") {
+    const draftRaw = await env.SITE_CONTENT.get("draft:current");
+    const draft = draftRaw ? JSON.parse(draftRaw) : await getDraft(env, request.url);
+    const stamp = new Date().toISOString().slice(0, 10);
+    return new Response(JSON.stringify({ savedAt: new Date().toISOString(), files: draft.files }, null, 2), {
+      headers: {
+        ...JSON_HEADERS,
+        "content-disposition": `attachment; filename="website-copy-${stamp}.json"`,
+      },
+    });
   }
 
   if (url.pathname === "/api/editor/backup" && request.method === "POST") {

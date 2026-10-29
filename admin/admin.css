@@ -886,3 +886,23 @@ h1 {
     grid-template-columns: auto auto minmax(128px, 1fr);
   }
 }
+.backup-note.is-error {
+  color: #b8442d;
+  font-weight: 700;
+}
+
+.backup-download {
+  width: 100%;
+  margin-top: 16px;
+}
+
+#ask-dialog h2 {
+  font-size: 28px;
+  line-height: 1.3;
+}
+
+#ask-dialog .confirm-actions button {
+  min-height: 52px;
+  padding: 0 22px;
+  font-size: 18px;
+}
