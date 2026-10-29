@@ -1,0 +1,14 @@
+name = "memories-2-dvd-usb-backup"
+main = "index.js"
+compatibility_date = "2026-05-02"
+send_metrics = false
+workers_dev = false
+
+# Fires at 04:00 and 05:00 UTC; the code only acts on the run that is midnight
+# in America/New_York, so daylight saving time doesn't move it.
+[triggers]
+crons = ["0 4,5 * * *"]
+
+[[kv_namespaces]]
+binding = "SITE_CONTENT"
+id = "3bf81b71c20144d5a571f961176306cb"

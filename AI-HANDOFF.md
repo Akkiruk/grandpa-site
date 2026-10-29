@@ -71,6 +71,13 @@ Published AI changes are stored in Cloudflare KV and served ahead of deployed st
 4. `_worker.js`'s `isAuthenticated()` calls `clerkClient.authenticateRequest(request, { authorizedParties: AUTHORIZED_PARTIES })` and checks `toAuth().userId`. `AUTHORIZED_PARTIES` in `_worker.js` lists the exact origins allowed to present a valid token (currently the production domain and the `*.pages.dev` project domain) — this is Clerk's CSRF protection; update it if the site's origin(s) ever change.
 5. For tests, `_worker.js` exports `__setClerkClientFactory()` as a dependency-injection seam so tests can substitute a fake Clerk client instead of making real network/JWKS calls. Production code never calls it.
 
+### Backups
+
+- Editor "Backups" button opens a dialog: "Create backup now" plus a list with Restore per entry. API: `GET /api/editor/backups`, `POST /api/editor/backup`, `POST /api/editor/backup/restore`.
+- A backup snapshots the working copy (draft if any, else published files) into KV (`backup:<id>`, index in `backups:index`). Skipped when identical (hash) to the newest backup. Caps: 20 manual, 14 auto, pruned per kind.
+- Restore loads the backup as the **draft** (preview, then Publish), saves the prior state as an auto backup first, and is undoable via the normal Undo.
+- Nightly auto backup: Pages can't run cron, so `backup-cron/` is a separate Worker (`memories-2-dvd-usb-backup`) sharing the KV namespace, importing `runAutoBackup` from `_worker.js`. Fires 04:00 and 05:00 UTC; code acts only at midnight America/New_York (grandpa is in Indiana). Deploy with `npm run deploy:backup`. **Needs the Cloudflare API token to have Workers Scripts: Edit** (the token in `.env` did not as of 2026-10-29, so this Worker was NOT yet deployed). Add the permission, never remove any.
+
 ### Photo uploads
 
 Users can attach a photo to a chat message; the AI sees it (multimodal vision) and can embed it in generated HTML.

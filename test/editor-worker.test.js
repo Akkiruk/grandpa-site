@@ -11,6 +11,8 @@ import worker, {
   handleApi,
   inlinePreviewAssets,
   isAllowedPath,
+  isEasternMidnight,
+  runAutoBackup,
   validateFiles,
 } from "../_worker.js";
 
@@ -662,4 +664,69 @@ test("gives an actionable error instead of a generic failure when a request is t
     /too much at once/
   );
   assert.equal(requestCount, 1);
+});
+
+function backupEnv() {
+  const kv = kvNamespace();
+  return {
+    ...signedInEnv(),
+    SITE_CONTENT: kv,
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.slice(1);
+        if (path.endsWith(".css") || path.endsWith(".js")) return new Response("x");
+        return new Response(`<!doctype html><html><head><title>${path}</title></head><body>${path}</body></html>`);
+      },
+    },
+  };
+}
+
+function apiCall(env, path, method = "GET", body) {
+  const request = new Request(`https://example.com/api/editor/${path}`, {
+    method,
+    headers: { origin: "https://example.com" },
+    body: body ? JSON.stringify(body) : method === "POST" ? "{}" : undefined,
+  });
+  return handleApi(request, env, new URL(request.url));
+}
+
+test("manual backup is skipped when nothing changed, and restore loads it as an undoable draft", async () => {
+  const env = backupEnv();
+  const first = await (await apiCall(env, "backup", "POST")).json();
+  assert.equal(first.created, true);
+  assert.equal((await (await apiCall(env, "backup", "POST")).json()).created, false);
+
+  // Change the working draft, then restore the first backup.
+  const draft = { id: "d", files: { ...files, "index.html": files["index.html"].replace("Hello", "Changed") }, message: "m", undoIds: [] };
+  await env.SITE_CONTENT.put("draft:current", JSON.stringify(draft));
+  const restored = await (await apiCall(env, "backup/restore", "POST", { backupId: first.backups[0].id })).json();
+  assert.match(restored.message, /Restored the backup/);
+  const live = await env.SITE_CONTENT.get("draft:current", "json");
+  assert.match(live.files["index.html"], /Welcome|index\.html/);
+  assert.doesNotMatch(live.files["index.html"], /Changed/);
+
+  // The pre-restore state was backed up, and the restore itself can be undone.
+  const { backups } = await (await apiCall(env, "backups")).json();
+  assert.equal(backups.length, 2);
+  const undone = await (await apiCall(env, "undo", "POST")).json();
+  assert.equal(undone.draft.message, "m");
+});
+
+test("nightly backup only runs at Eastern midnight and only when things changed", async () => {
+  assert.equal(isEasternMidnight(new Date("2026-01-15T05:00:00Z")), true);
+  assert.equal(isEasternMidnight(new Date("2026-07-15T04:00:00Z")), true);
+  assert.equal(isEasternMidnight(new Date("2026-01-15T04:00:00Z")), false);
+  assert.equal(isEasternMidnight(new Date("2026-07-15T05:00:00Z")), false);
+
+  const env = backupEnv();
+  const night = new Date("2026-01-15T05:00:00Z");
+  assert.deepEqual(await runAutoBackup(env, new Date("2026-01-15T04:00:00Z")), { skipped: "not midnight" });
+  assert.deepEqual(await runAutoBackup(env, night), { skipped: "no editor changes yet" });
+
+  await env.SITE_CONTENT.put("draft:current", JSON.stringify({ id: "d", files }));
+  assert.deepEqual(await runAutoBackup(env, night), { created: true });
+  assert.deepEqual(await runAutoBackup(env, night), { skipped: "unchanged" });
+
+  await env.SITE_CONTENT.put("draft:current", JSON.stringify({ id: "d", files: { ...files, "script.js": "//new" } }));
+  assert.deepEqual(await runAutoBackup(env, night), { created: true });
 });

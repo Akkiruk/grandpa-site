@@ -3,6 +3,7 @@
   "scripts": {
     "build": "powershell -ExecutionPolicy Bypass -File ./scripts/stage-pages.ps1",
     "configure:openrouter": "powershell -ExecutionPolicy Bypass -File ./scripts/set-openrouter-key.ps1",
+    "deploy:backup": "wrangler deploy --config backup-cron/wrangler.toml",
     "test": "node --test"
   },
   "devDependencies": {

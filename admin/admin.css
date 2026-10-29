@@ -784,6 +784,17 @@ h1 {
   font-size: 13px;
 }
 
+.backup-note,
+.backup-status {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.backup-status:empty {
+  display: none;
+}
+
 .confirm-dialog h2 {
   font-size: 26px;
 }

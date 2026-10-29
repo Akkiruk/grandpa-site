@@ -26,6 +26,7 @@ const UPLOAD_TYPES = {
 const UPLOAD_INDEX_LIMIT = 200;
 const MAX_SELECTION_TEXT_LENGTH = 300;
 const MAX_SELECTION_HTML_LENGTH = 1200;
+const BACKUP_LIMITS = { auto: 14, manual: 20 };
 
 class ConflictError extends Error {}
 
@@ -564,6 +565,96 @@ async function publishFilesIfUnchanged(env, files, expectedManifestRaw) {
   await env.SITE_CONTENT.put("published:manifest", JSON.stringify(Object.keys(files)));
 }
 
+// ---- Backups -------------------------------------------------------------
+// A backup is a snapshot of the site as the editor currently sees it: the
+// unpublished draft if there is one, otherwise the published files. Backups
+// live in KV, separate from the publish history (which only records the site
+// as it was right before each publish), so they also capture draft work.
+
+export async function hashFiles(files) {
+  const canonical = JSON.stringify(
+    Object.keys(files)
+      .sort()
+      .map(path => [path, normalizeLineEndings(files[path])])
+  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function saveBackup(env, files, { kind, label }) {
+  const hash = await hashFiles(files);
+  const index = (await env.SITE_CONTENT.get("backups:index", "json")) || [];
+  // Nothing changed since the newest backup of any kind: a second copy of the
+  // same site would only push a useful older backup out of the retention cap.
+  if (index[0]?.hash === hash) {
+    return { backup: index[0], created: false };
+  }
+  const createdAt = new Date().toISOString();
+  const id = createdAt.replace(/[.:]/g, "-");
+  const entry = { id, kind, label, createdAt, hash, fileCount: Object.keys(files).length };
+  await env.SITE_CONTENT.put(`backup:${id}`, JSON.stringify({ ...entry, files }));
+
+  // Caps are per kind so a run of automatic backups can never evict the ones
+  // someone deliberately made by pressing the button.
+  const next = [entry, ...index];
+  const kept = [];
+  const counts = { auto: 0, manual: 0 };
+  const dropped = [];
+  for (const item of next) {
+    counts[item.kind] = (counts[item.kind] || 0) + 1;
+    (counts[item.kind] > BACKUP_LIMITS[item.kind] ? dropped : kept).push(item);
+  }
+  await env.SITE_CONTENT.put("backups:index", JSON.stringify(kept));
+  await Promise.all(dropped.map(item => env.SITE_CONTENT.delete(`backup:${item.id}`)));
+  return { backup: entry, created: true };
+}
+
+// KV-only read, for the scheduled worker, which has no access to the deployed
+// static assets. Returns null when the editor has never been used (no draft,
+// no published manifest): the site is then exactly what's in the repo, so
+// there is nothing "changed" to back up.
+async function readWorkingFilesFromKv(env) {
+  const draft = await env.SITE_CONTENT.get("draft:current", "json");
+  if (draft?.files) {
+    return draft.files;
+  }
+  const manifest = await env.SITE_CONTENT.get("published:manifest", "json");
+  if (!manifest) {
+    return null;
+  }
+  const entries = await Promise.all(
+    manifest.map(async path => [path, await env.SITE_CONTENT.get(`published:${path}`)])
+  );
+  if (entries.some(([, content]) => content === null)) {
+    throw new Error("A published file is missing from storage, so the backup was skipped.");
+  }
+  return Object.fromEntries(entries);
+}
+
+// Cloudflare cron schedules are UTC only. The cron worker fires at both 04:00
+// and 05:00 UTC and this keeps only the run that lands on midnight Eastern
+// (05:00 UTC in winter, 04:00 UTC in summer), so DST never shifts it.
+export function isEasternMidnight(date = new Date()) {
+  const hour = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).format(date);
+  return Number(hour) === 0;
+}
+
+export async function runAutoBackup(env, now = new Date()) {
+  if (!isEasternMidnight(now)) {
+    return { skipped: "not midnight" };
+  }
+  const files = await readWorkingFilesFromKv(env);
+  if (!files) {
+    return { skipped: "no editor changes yet" };
+  }
+  const { created } = await saveBackup(env, files, { kind: "auto", label: "Automatic nightly backup" });
+  return created ? { created: true } : { skipped: "unchanged" };
+}
+
 async function putDraftIfUnchanged(env, expectedRaw, nextDraft) {
   const current = await env.SITE_CONTENT.get("draft:current");
   if (current !== expectedRaw) {
@@ -793,6 +884,75 @@ export async function handleApi(request, env, url) {
     await deleteDraftCheckpoints(env, draft.undoIds);
     await deleteDraftIfUnchanged(env, draftRaw);
     return json({ ok: true, message: "The website is live with your changes." });
+  }
+
+  if (url.pathname === "/api/editor/backups" && request.method === "GET") {
+    return json({ backups: (await env.SITE_CONTENT.get("backups:index", "json")) || [] });
+  }
+
+  if (url.pathname === "/api/editor/backup" && request.method === "POST") {
+    const draftRaw = await env.SITE_CONTENT.get("draft:current");
+    const draft = draftRaw ? JSON.parse(draftRaw) : await getDraft(env, request.url);
+    const { created, backup } = await saveBackup(env, draft.files, { kind: "manual", label: "Backup you made" });
+    const backups = (await env.SITE_CONTENT.get("backups:index", "json")) || [];
+    return json({
+      ok: true,
+      created,
+      backups,
+      message: created
+        ? "Backup saved."
+        : `Nothing has changed since your last backup (${backup.createdAt}), so it is already safe.`,
+    });
+  }
+
+  if (url.pathname === "/api/editor/backup/restore" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const backup = await env.SITE_CONTENT.get(`backup:${body.backupId || ""}`, "json");
+    if (!backup?.files) {
+      return json({ error: "That backup was not found." }, 404);
+    }
+    validateFiles(backup.files);
+
+    const draftRaw = await env.SITE_CONTENT.get("draft:current");
+    const storedDraft = draftRaw ? JSON.parse(draftRaw) : null;
+    const current = storedDraft || (await getDraft(env, request.url));
+    // Restoring replaces the working copy, so keep what's there first: both as
+    // a backup, and as an undo point on the draft.
+    await saveBackup(env, current.files, { kind: "auto", label: "Saved automatically before a restore" });
+    const checkpointId = await saveDraftCheckpoint(env, current, Boolean(storedDraft));
+    const allUndoIds = [...(current.undoIds || []), checkpointId];
+    const undoIds = allUndoIds.slice(-DRAFT_UNDO_LIMIT);
+    const expiredUndoIds = allUndoIds.slice(0, -DRAFT_UNDO_LIMIT);
+
+    const message = `Restored the backup from ${backup.createdAt}. Check the preview, then publish it to put it on the live site.`;
+    const receipt = {
+      files: Object.keys(backup.files).filter(path => backup.files[path] !== current.files[path]),
+      operationCount: 1,
+      previewPath: "index.html",
+    };
+    const updatedDraft = {
+      id: current.id,
+      files: backup.files,
+      message,
+      request: "Restore backup",
+      updatedAt: new Date().toISOString(),
+      lastEditId: checkpointId,
+      receipt,
+      undoIds,
+    };
+    const conversation = [
+      ...(await readConversation(env)),
+      { role: "assistant", text: message, editId: checkpointId, receipt },
+    ].slice(-12);
+    await putDraftIfUnchanged(env, draftRaw, updatedDraft);
+    await Promise.all([saveConversation(env, conversation), deleteDraftCheckpoints(env, expiredUndoIds)]);
+    return json({
+      message,
+      draft: draftSummary(updatedDraft),
+      conversation,
+      backups: (await env.SITE_CONTENT.get("backups:index", "json")) || [],
+      previewPath: "index.html",
+    });
   }
 
   if (url.pathname === "/api/editor/rollback" && request.method === "POST") {

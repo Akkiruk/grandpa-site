@@ -648,6 +648,86 @@ versionsButton.addEventListener("click", () => {
   versionsDialog.showModal();
 });
 document.getElementById("close-versions").addEventListener("click", () => versionsDialog.close());
+
+const backupsDialog = document.getElementById("backups-dialog");
+const backupList = document.getElementById("backup-list");
+const backupStatus = document.getElementById("backup-status");
+const createBackupButton = document.getElementById("create-backup");
+
+function renderBackups(backups) {
+  backupList.replaceChildren();
+  if (!backups.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No backups yet.";
+    backupList.append(empty);
+    return;
+  }
+  backups.forEach(backup => {
+    const row = document.createElement("div");
+    row.className = "version-row";
+    const copy = document.createElement("div");
+    const strong = document.createElement("strong");
+    strong.textContent = new Date(backup.createdAt).toLocaleString();
+    const description = document.createElement("p");
+    description.textContent = backup.kind === "manual" ? "Backup you made" : backup.label;
+    copy.append(strong, description);
+    const button = document.createElement("button");
+    button.className = "secondary-button";
+    button.type = "button";
+    button.textContent = "Restore";
+    button.addEventListener("click", () => restoreBackup(backup, button));
+    row.append(copy, button);
+    backupList.append(row);
+  });
+}
+
+async function openBackups() {
+  backupStatus.textContent = "";
+  backupList.replaceChildren();
+  backupsDialog.showModal();
+  try {
+    renderBackups((await api("backups", { method: "GET" })).backups);
+  } catch (error) {
+    backupStatus.textContent = error.message;
+  }
+}
+
+createBackupButton.addEventListener("click", async () => {
+  createBackupButton.disabled = true;
+  backupStatus.textContent = "Saving…";
+  try {
+    const data = await api("backup", { method: "POST", body: "{}" });
+    backupStatus.textContent = data.message;
+    renderBackups(data.backups);
+  } catch (error) {
+    backupStatus.textContent = error.message;
+  } finally {
+    createBackupButton.disabled = false;
+  }
+});
+
+async function restoreBackup(backup, button) {
+  const when = new Date(backup.createdAt).toLocaleString();
+  if (!window.confirm(`Go back to the backup from ${when}? It will show in the preview first, and your current version is saved as a backup before this.`)) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    const data = await api("backup/restore", { method: "POST", body: JSON.stringify({ backupId: backup.id }) });
+    backupsDialog.close();
+    state.draft = data.draft;
+    state.conversation = data.conversation;
+    renderConversation();
+    renderDraftState();
+    refreshPreview(data.previewPath);
+  } catch (error) {
+    backupStatus.textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+document.getElementById("backups-button").addEventListener("click", openBackups);
+document.getElementById("close-backups").addEventListener("click", () => backupsDialog.close());
 document.getElementById("refresh-preview").addEventListener("click", () => refreshPreview());
 document.getElementById("desktop-size").addEventListener("click", () => setPreviewSize("desktop"));
 document.getElementById("phone-size").addEventListener("click", () => setPreviewSize("phone"));
